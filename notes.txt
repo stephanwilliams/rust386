@@ -1,0 +1,77 @@
+ATA8-ACS
+
+Mandatory:
+4.2  General feature set
+4.18 Power Management feature set
+
+4.2 General feature set:
+* EXECUTE DEVICE DIAGNOSTIC
+* FLUSH CACHE
+* IDENTIFY CACHE
+* READ DMA
+* READ MULTIPLE
+* READ SECTOR(S)
+* READ VERIFY SECTORS(S)
+* SET FEATURES
+* SET MULTIPLE MODE
+* WRITE DMA
+* WRITE MULTIPLE
+* WRITE SECTOR(S)
+Read-only:
+* EXECUTE DEVICE DIAGNOSTIC
+* IDENTIFY CACHE
+* READ DMA
+* READ MULTIPLE
+* READ SECTOR(S)
+* READ VERIFY SECTORS(S)
+* SET FEATURES
+* SET MULTIPLE MODE
+Optional:
+* DOWNLOAD MICROCODE
+* NOP
+* READ BUFFER
+* WRITE BUFFER
+* WRITE UNCORRECTABLE
+
+4.18 Power Management feature set:
+* Standby timer
+* CHECK POWER MODE
+* IDLE
+* IDLE IMMEDIATE
+* SLEEP
+* STANDBY
+* STANDBY IMMEDIATE
+
+28-bit Read/Write Commands
+00h Feature
+01h Count
+02h LBA MSB
+03h LBA LSB
+04h
+05h 
+
+80386
+* CPU
+  * Execution Unit
+  * Instruction Unit
+* MMU
+  * Segmentation Unit
+  * Paging Unit (below segmentation unit)
+* Bus Interface
+  * Separate data and address buses
+  * 
+
+386 I/O
+
+* 64K IO address space
+* 8, 16, 32 bit ports (aligned)
+* 256 in immediate, or 65536 in DX
+* Transfer 8, 16, 32 byte at a time
+* IN/OUT move to/from registers
+* INS/OUTS move to/from memory
+
+Initialization
+* CS=0xFFFF0000:F000, IP=0xFFF0
+* CS_selector=F000h, CS_base=FFFF0000h, IP=FFF0h
+* "Immediately after setting the PE flag, the initialization code must flush the
+  the processor's instruction prefetch queue by executing a JMP instruction."

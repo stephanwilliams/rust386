@@ -1,0 +1,6 @@
+[package]
+name = "rust386"
+version = "0.1.0"
+authors = ["Stephan Williams <stephanwilliams.93@gmail.com>"]
+
+[dependencies]
