@@ -75,3 +75,261 @@ Initialization
 * CS_selector=F000h, CS_base=FFFF0000h, IP=FFF0h
 * "Immediately after setting the PE flag, the initialization code must flush the
   the processor's instruction prefetch queue by executing a JMP instruction."
+
+BIOS
+* 0x000F0000-0x000FFFFF
+
+Instruction Decoding
+* Prefixes
+  * Insruction prefixes
+    * F3h REP (string only)
+    * F3h REPE/REPz (string only)
+    * F2h REPNE/REPNZ (string only)
+    * F0h LOCK
+  * Segment override prefixes
+    * 2Eh CS override
+    * 36h SS override
+    * 3Eh DS override
+    * 26h ES override
+    * 64h FS overidde
+    * 65h GS override
+    * 66h operand-size
+    * 67h address-size
+  * Format:
+    * [INSTRUCTION PREFIX]?
+    * [ADDRESS-SIZE PREFIX]?
+    * [OPERAND-SIZE PREFIX]?
+    * [SEGMENT OVERRIDE]?
+    * [OPCODE]{1,2}
+    * [MODR/M]?
+    * [SIB]?
+    * [DISPLACEMENT]{0,1,2,4}
+    * [IMMEDIATE]{0,1,2,4}
+* ModR/M
+  * [7:6] MOD        combines with r/m for 32 vals: 8 reg, 24 indexing modes
+  * [5:3] REG/OPCODE reg num OR 3 opcode bits (determined by first opcode byte)
+  * [2:0] R/M        specify reg as operand loc, or form addressing-mode
+                     encoding with mod
+* SIB
+  * [7:6] SS    scale factor
+  * [5:3] INDEX reg num of index
+  * [2:0] BASE  reg num of base
+* Displacement
+  * Sign extended!
+* Registers
+  000 0 AL AX EAX
+  001 1 CL CX ECX
+  010 2 DL DX EDX
+  011 3 BL BX EBX
+  100 4 AH SP ESP
+  101 5 CH BP EBP
+  110 6 DH SI ESI
+  111 7 BH DI EDI
+  0 ES
+  1 CS
+  2 SS
+  3 DS
+  4 FS
+  5 GS
+
+
+Bus Read Cycle
+clk2 clk  
+rise fall T1 assert ads/etc
+fall      
+rise rise 
+fall      
+rise fall T2
+fall      
+rise rise 
+fall      
+
+A No ModRM; address encoded in instruction
+* C ModRM reg selects control reg
+* D ModRM reg selects debug reg
+E ModRM 
+F Flags reg
+G ModRM reg selects general reg
+I Immediate
+J Relative offset to be added to IP
+M ModRM may only refer to memory
+O No ModRM; offset of operand coded in instruction
+* R ModRM mod may only refer to general reg
+S ModRM reg selects segment register
+* T ModRM reg selects test register
+X Memory addressed by DS:SI
+Y Memory addressed by ES:DI
+
+A C D E F G I J M O R S T X Y (15)
+a b c d p s v w (8)
+
+3
+AL
+CL
+DL
+BL
+AH
+CH
+DH
+BH
+eAX
+eCX
+eDX
+eBX
+eSP
+eBP
+eSI
+eDI
+Ap
+Av
+Eb
+Ev
+Fv
+Ib
+Iw
+Jb
+Jv
+* Mp
+
+AL, DX
+AL, Ib
+AL, Ob
+AL, Xb
+DX, AL
+DX, Dv ?
+DX, eAX
+Dx, Xb ?
+eAX, DX
+eAX, Ib
+eAX, Iv
+eAX, Ov
+eAX, Xv
+* Cd, Rd
+* Dd, Rd
+Eb, 1
+Eb, CL
+Eb, Ib
+Eb, Gb
+Ev, 1
+Ev, CL
+* Ev, Ib
+Ev, Iv
+Ev, Gv,
+Ew, Rw
+Ew, Sw
+* Gv, Eb
+* Gv, Ew
+* Gv, Ev
+Gv, M  ?
+Gv, Ma
+Gv, Mp
+* Gw, Ew
+Ib, AL
+Ib, eAX
+Iw, Ib
+Ob, AL
+* Rd, Cd
+* Rd, Dd
+* Rd, Td
+Ov, eAX
+Sw, Ew
+* Td, Rd
+Xb, Yb
+Xv, Yv
+Yb, DX
+Yv, eAX
+
+GvEvIv
+* EvGvIb
+* EvGvCL
+
+Application Register Set
+
+EAX AX AH AL
+EDX DX DH DL
+ECX CX CH CL
+EBX BX BH BL
+EBP BP
+ESI SI
+EDI DI
+ESP SP
+
+CS
+SS
+DS
+ES
+FS
+GS
+
+EFLAGS
+IP
+
+Systems Registers
+
+EFLAGS
+
+GDTR Global Descriptor Table Register
+LDTR Local Descriptor Table Register
+IDTR Interrupt Descriptor Table Register
+TR   Task Register
+
+CR0
+CR1
+CR2
+CR3
+
+Debug Registers (12)
+DR7
+DR6
+DR5
+DR4
+DR3
+DR2
+DR1
+DR0
+
+Test Registers (12)
+
+TR6
+TR7
+
+
+
+
+
+
+
+
+
+
+* Ap
+Av
+Cd
+Dd
+Dv
+Dx
+Eb
+Ev
+Ew
+Fv
+Gb
+Gv
+Gw *
+Ib
+Iv
+Iw
+Jb
+Jv
+M
+* Ma
+Mp
+Ob
+Ov
+Rd
+Rw
+Sw
+Td
+Xb
+Xv
+Yb
+Yv

@@ -1,5 +1,4 @@
 use clock::{ Clocked, Clock, ClockState };
-use std::cell::Cell;
 use std::cell::RefCell;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,7 +26,7 @@ pub enum BusLine {
     BE1,
     BE2,
     BE3,
-    A0, A1, A2, A3, A4, A5, A6, A7,
+    A2, A3, A4, A5, A6, A7,
     A8, A9, A10, A11, A12, A13, A14, A15,
     A16, A17, A18, A19, A20, A21, A22, A23,
     A24, A25, A26, A27, A28, A29, A30, A31,
@@ -140,7 +139,6 @@ impl BusState {
     }
 
     pub fn assert(&mut self, line: BusLine, signal: Signal) {
-        assert!(line != BusLine::A0 && line != BusLine::A1, "A0 and A1 can only be read");
         self.lines[line as usize] = signal;
     }
 
@@ -149,14 +147,15 @@ impl BusState {
     }
 
     pub fn assert_address(&mut self, addr: u32) {
-        let off = BusLine::A0 as usize;
+        assert!(addr & 0x3 == 0, "assert unaligned address on bus");
+        let off = BusLine::A2 as usize - 2;
         for i in 2..32 {
             self.lines[off + i] = if (addr >> i) & 1 == 1 { Signal::High } else { Signal::Low };
         }
     }
 
     pub fn read_address(&self) -> u32 {
-        let off = BusLine::A0 as usize;
+        let off = BusLine::A2 as usize - 2;
         let mut addr = 0;
         for i in 2..32 {
             match self.lines[off + i] {
@@ -168,10 +167,32 @@ impl BusState {
         addr
     }
 
-    pub fn assert_data(&mut self, data: u32) {
-        let off = BusLine::D0 as usize;
-        for i in 0..32 {
-            self.lines[off + i] = if (data >> i) & 1 == 1 { Signal::High } else { Signal::Low };
+    pub fn assert_data(&mut self, data: u32, size: usize, off: usize) {
+        assert!(size == 1 || size == 2 || size == 3 || size == 4, "assert invalid data size on bus");
+        assert!(off + size <= 4, "assert invalid offset on bus");
+
+        let be_off = BusLine::BE0 as usize;
+        let d_off = BusLine::D0 as usize;
+
+        for b in (0..4).rev() {
+            if off <= b && b < off + size {
+                self.lines[be_off + b] = Signal::Low;
+            } else {
+                self.lines[be_off + b] = Signal::High;
+            }
+
+            for i in 0..8 {
+                self.lines[d_off + b * 8 + i] =
+                    if off >= 2 && b < 2 {
+                        self.lines[d_off + (b + 2) * 8 + i]
+                    } else if off <= b && b < off + size {
+                        if (data >> (8 * (b - off) + i)) & 1 == 1 {
+                            Signal::High
+                        } else {
+                            Signal::Low
+                        }
+                    } else { Signal::Undefined }
+            }
         }
     }
 

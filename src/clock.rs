@@ -68,14 +68,16 @@ impl<'a, S> Clocked<S, S> for StandardClock<'a, S> where S: ClockState {
 
 pub struct HalfTimeClock<'a, S> where S: ClockState {
     clockeds: Vec<RefCell<Box<Clocked<S, S> + 'a>>>,
-    rising: bool
+    rising: bool,
+    last_state: S
 }
 
 impl<'a, S> HalfTimeClock<'a, S> where S: ClockState {
     pub fn new() -> HalfTimeClock<'a, S> {
         HalfTimeClock {
             clockeds: vec![],
-            rising: false
+            rising: false,
+            last_state: S::unit()
         }
     }
 }
@@ -101,11 +103,12 @@ impl<'a, S> Clocked<S, S> for HalfTimeClock<'a, S> where S: ClockState {
             }
         }
 
+        self.last_state = s.clone();
+
         s
     }
     
     fn falling_edge(&mut self, state: S) -> S {
-        // nop
-        S::unit() // or preserve state from rising?
+        self.last_state.clone()
     }
 }
