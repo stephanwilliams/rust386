@@ -12,8 +12,11 @@ use opcodes::{
     AddressingMethod, OperantType, UnresolvedOperand, UnresolvedRegister, UnresolvedOp,
     UnresolvedOperands, SINGLE_OPCODE_MAP, DOUBLE_OPCODE_MAP, GROUP_MAP
 };
-use reg::{ Size, SegmentRegister, Register, RegisterFile, EFlags };
-use instr::{ InstructionPrefix, SegmentOverridePrefix, Instruction };
+use reg::{ Size, SegmentRegister, Register, RegisterFile, EFlags, RegEnum };
+use instr::{
+    InstructionPrefix, SegmentOverridePrefix, Instruction,
+    Operands, Op
+};
 
 type VAddr  = u32;
 type SAddr  = (u16, u16);
@@ -56,6 +59,10 @@ enum InstructionState {
     ADD_04,
     ADD_05,
 
+    MOV_Bx,
+
+    IN,
+
     JMP_EA,
 
     MemWrite,
@@ -74,7 +81,7 @@ macro_rules! segaddr {
 macro_rules! fetch_next_instr_byte {
     ( $slf:ident ) => {{
         trace!("fetch next instr byte");
-        let mut dist: i32 = ($slf.instr_eip - $slf.instr_buf_addr) as i32;
+        let mut dist: i32 = ($slf.instr_eip as i32) - ($slf.instr_buf_addr as i32);
         if dist < 0 || dist >= 4 {
             $slf.instr_buf_addr = $slf.instr_eip & !0x3;
             let addr_copy = $slf.instr_buf_addr;
@@ -148,7 +155,8 @@ pub struct Intel80386 {
     bus_addr: PAddr,
     bus_data: u32,
     bus_data_size: usize,
-    bus_data_off: usize,
+
+    io_read_result: Option<(IOAddr, u32)>
 }
 
 impl Intel80386 {
@@ -179,7 +187,8 @@ impl Intel80386 {
             bus_addr: 0,
             bus_data: 0,
             bus_data_size: 0,
-            bus_data_off: 0
+
+            io_read_result: None
         };
 
         i386.eip = 0xFFF0;
@@ -202,6 +211,8 @@ impl Intel80386 {
         if self.instr_state == InstructionState::Fetch0 {
             debug!("START EIP: {:08x}", self.eip());
             self.instr_eip = self.eip();
+            self.instr_did_consume_byte = true;
+            self.current_instr = Instruction::new();
         }
         instr_state![self, Fetch0 -> Fetch1, {
             debug!("instr at eip: {:08x}", self.instr_eip);
@@ -315,6 +326,11 @@ impl Intel80386 {
             }
 
             self.current_instr.resolve();
+            trace!("disp: {:08}({:?}) imm: {:08x}({:?})",
+                self.current_instr.disp,
+                self.current_instr.disp_sz,
+                self.current_instr.imm,
+                self.current_instr.imm_sz);
         },
         consumed if self.current_instr.modrm.is_some()];
 
@@ -393,24 +409,56 @@ impl Intel80386 {
 
         instr_state![self, Decode -> MemRead, {
             debug!("{:?}", self.current_instr);
+            self.eip = self.instr_eip - 1;
             // unimplemented!();
         }];
 
         instr_state![self, MemRead -> MemRead, {
 
         },
-        -> JMP_EA if self.current_instr.opcode == 0xEA];
+        -> MOV_Bx if self.current_instr.opcode & 0xF0 == 0xB0,
+        -> JMP_EA if self.current_instr.opcode == 0xEA,
+        -> IN if self.current_instr.opcode & 0xF6 == 0xE4
+        ];
+
+        instr_state![self, MOV_Bx -> Fetch0, {
+            trace!("{:?}", self.current_instr.operands);
+            match self.current_instr.operands {
+                Operands::Double(Op::Register(reg), Op::Immediate(imm)) => {
+                    self.gen_regs.write(reg, self.current_instr.imm);
+                },
+                _ => panic!("unexpected operand")
+            };
+        }];
+
+        instr_state![self, IN -> Fetch0, {
+            let (dst_reg, src_port) = match self.current_instr.operands {
+                Operands::Double(Op::Register(reg), Op::Immediate(imm)) =>
+                    (reg, self.current_instr.imm as u16),
+                Operands::Double(Op::Register(reg1), Op::Register(reg2)) =>
+                    (reg1, self.gen_regs.read(reg2) as u16),
+                _ => panic!("unexpected operands for IN")
+            };
+
+            let res = self.read_io_size(src_port, dst_reg.size());
+            if !res.is_some() { return; }
+
+
+
+            unimplemented!();
+        }];
 
         instr_state![self, JMP_EA -> Fetch0, {
             if true /* real mode */ {
                 trace!("INSTR DISP: {:08x}", self.current_instr.disp);
                 self.has_ljmped = true;
+                trace!("jmp disp: {:08x} imm: {:08x}", self.current_instr.disp, self.current_instr.imm);
                 if self.current_instr.op_sz == Size::Size16 {
-                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.disp);
-                    self.eip = self.current_instr.imm & 0x0000FFFF;
+                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
+                    self.eip = self.current_instr.disp & 0x0000FFFF;
                 } else {
-                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.disp);
-                    self.eip = self.current_instr.imm;
+                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
+                    self.eip = self.current_instr.disp;
                 }
             } else {
                 // protected mode
@@ -485,6 +533,38 @@ impl Intel80386 {
         self.bus_is_mem = true;
         self.bus_addr = paddr;
         self.bus_transfer_state = BusTransferState::T1;
+        self.bus_data_size = 4;
+        None
+    }
+
+    fn read_io_size(&mut self, addr: IOAddr, size: Size) -> Option<u32> {
+        match size {
+            Size::Size8  => self.read_io::<u8 >(addr).map(|x| x as u32),
+            Size::Size16 => self.read_io::<u16>(addr).map(|x| x as u32),
+            Size::Size32 => self.read_io::<u32>(addr),
+            _ => panic!("unsupported size")
+        }
+    }
+
+    fn read_io<T>(&mut self, addr: IOAddr) -> Option<T> where T: FromPrimitive {
+        assert!(self.bus_transfer_state == BusTransferState::Idle);
+
+        let count = mem::size_of::<T>() as u32;
+        assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");
+        assert!((addr as u32) % count == 0, "io access must be aligned");
+
+        if let Some((ioaddr, val)) = self.io_read_result {
+            if addr == ioaddr {
+                return T::from_u32(val);
+            }
+        }
+
+        self.bus_is_write = false;
+        self.bus_is_data = true;
+        self.bus_is_mem = false;
+        self.bus_addr = addr as u32;
+        self.bus_transfer_state = BusTransferState::T1;
+        self.bus_data_size = count as usize;
         None
     }
 }
@@ -511,9 +591,10 @@ impl Clocked<BusState, BusState> for Intel80386 {
                 new_state.assert(BusLine::W_R,  if self.bus_is_write { Signal::High } else { Signal::Low });
                 new_state.assert(BusLine::D_C,  if self.bus_is_data  { Signal::High } else { Signal::Low });
                 new_state.assert(BusLine::M_IO, if self.bus_is_mem   { Signal::High } else { Signal::Low });
-                new_state.assert_address(self.bus_addr);
                 if self.bus_is_write {
-                    new_state.assert_data(self.bus_data, self.bus_data_size, self.bus_data_off);
+                    new_state.assert_address_and_data(self.bus_addr, self.bus_data, self.bus_data_size);
+                } else {
+                    new_state.assert_address(self.bus_addr, self.bus_data_size);
                 }
 
                 self.bus_transfer_state = BusTransferState::T2;

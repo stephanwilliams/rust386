@@ -20,6 +20,8 @@ extern crate num;
 #[macro_use]
 extern crate bitflags;
 
+extern crate byteorder;
+
 #[macro_use]
 mod opcodes;
 
@@ -31,19 +33,26 @@ mod ram;
 mod reg;
 mod rom;
 mod instr;
+mod iter;
+mod iobus;
 
 use bus::{ Bus, BusState };
 use clock::{ HalfTimeClock, StandardClock, Clock, Clocked };
 use cpu::{ Intel80386 };
 use ram::{ MemoryController };
 use rom::{ Rom };
+use iter::{ DWords };
+use iobus::{ IoBus };
+
+use std::fs::{ File };
 
 fn main() {
     env_logger::init().unwrap();
 
     let mut cpu = Intel80386::new();
 
-    let bios = vec![0, 0, 0, 0];
+    let bios_bin = File::open("../bios/bios.bin").unwrap();
+    let bios: Vec<u32> = DWords::new(bios_bin).collect();
     let bios_rom = Rom::new(&bios[..], 0x10000);
     cpu.map_rom(bios_rom, 0x000F0000..0x00100000);
 
@@ -58,15 +67,17 @@ fn main() {
     hclock.add_clocked(cpu);
 
     let memctl = MemoryController::new(4 * 1024 * 1024 * 1024);
+    let iobus = IoBus::new();
 
     let mut bus = Bus::new();
     bus.add_clocked(hclock);
     bus.add_clocked(memctl);
+    bus.add_clocked(iobus);
 
     let mut clock: StandardClock<()> = StandardClock::new();
     clock.add_clocked(bus);
 
-    for _ in 0..8 {
+    for _ in 0..16 {
         clock.rising_edge(());
         clock.falling_edge(());
     }

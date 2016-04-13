@@ -49,6 +49,15 @@ impl Not for Size {
 pub trait RegEnum : FromPrimitive + ToPrimitive {
     fn encode(&self) -> u8;
     fn decode(encoding: u8, size: Size) -> Self;
+
+    fn size(&self) -> Size {
+        match self.to_u32().unwrap() & 0b11 {
+            0b00 | 0b01 => Size::Size8,
+            0b10 => Size::Size16,
+            0b11 => Size::Size32,
+            _ => unreachable!()
+        }
+    }
 }
 
 enum_primitive! {

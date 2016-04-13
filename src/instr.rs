@@ -312,6 +312,7 @@ impl Instruction {
                 Op::Register(if op16 { Register::SI } else { Register::ESI }),
             UnresolvedRegister::eDI =>
                 Op::Register(if op16 { Register::DI } else { Register::EDI }),
+            UnresolvedRegister::DX => Op::Register(Register::DX),
             UnresolvedRegister::AL => Op::Register(Register::AL),
             UnresolvedRegister::CL => Op::Register(Register::CL),
             UnresolvedRegister::DL => Op::Register(Register::DL),

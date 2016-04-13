@@ -146,13 +146,37 @@ impl BusState {
         self.lines[line as usize]
     }
 
-    pub fn assert_address(&mut self, addr: u32) {
-        assert!(addr & 0x3 == 0, "assert unaligned address on bus");
-        let off = BusLine::A2 as usize - 2;
+    pub fn assert_address(&mut self, addr: u32, size: usize) {
+        let off = (addr & 0b11) as usize;
+        trace!("bus assert addr {:08x} size {:08x}", addr, size);
+        assert!((addr % 4) + (size as u32) <= 4, "assert invalid address for size on bus");
+
+        let a2_off = BusLine::A2 as usize - 2;
         for i in 2..32 {
-            self.lines[off + i] = if (addr >> i) & 1 == 1 { Signal::High } else { Signal::Low };
+            self.lines[a2_off + i] = if (addr >> i) & 1 == 1 { Signal::High } else { Signal::Low };
+        }
+
+        let be_off = BusLine::BE0 as usize;
+        for i in 0..4 {
+            self.lines[be_off + i] =
+                if i >= off && i < off + size { Signal::Low } else { Signal::High };
         }
     }
+
+    pub fn assert_address_and_data(&mut self, addr: u32, data: u32, size: usize) {
+        let off = (addr & 0x3) as usize;
+        assert!(addr + (size as u32) <= 4, "assert invalid bus address for data size");
+        self.assert_address(addr, size);
+        self.assert_data(data, size, off);
+    }
+
+    // pub fn assert_address(&mut self, addr: u32) {
+    //     assert!(addr & 0x3 == 0, "assert unaligned address on bus");
+    //     let off = BusLine::A2 as usize - 2;
+    //     for i in 2..32 {
+    //         self.lines[off + i] = if (addr >> i) & 1 == 1 { Signal::High } else { Signal::Low };
+    //     }
+    // }
 
     pub fn read_address(&self) -> u32 {
         let off = BusLine::A2 as usize - 2;
@@ -164,22 +188,32 @@ impl BusState {
             }
         }
 
-        addr
+        let be_off = BusLine::BE0 as usize;
+        let mut count = 0;
+        while count < 3 {
+            if self.lines[be_off + count] == Signal::Low {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+
+        addr + (count as u32)
     }
 
     pub fn assert_data(&mut self, data: u32, size: usize, off: usize) {
         assert!(size == 1 || size == 2 || size == 3 || size == 4, "assert invalid data size on bus");
         assert!(off + size <= 4, "assert invalid offset on bus");
 
-        let be_off = BusLine::BE0 as usize;
+        // let be_off = BusLine::BE0 as usize;
         let d_off = BusLine::D0 as usize;
 
         for b in (0..4).rev() {
-            if off <= b && b < off + size {
-                self.lines[be_off + b] = Signal::Low;
-            } else {
-                self.lines[be_off + b] = Signal::High;
-            }
+            // if off <= b && b < off + size {
+            //     self.lines[be_off + b] = Signal::Low;
+            // } else {
+            //     self.lines[be_off + b] = Signal::High;
+            // }
 
             for i in 0..8 {
                 self.lines[d_off + b * 8 + i] =
@@ -212,6 +246,29 @@ impl BusState {
         }
 
         data
+    }
+
+    pub fn read_size(&self) -> usize {
+        let be_off = BusLine::BE0 as usize;
+        let mut off = 0;
+        for i in 0..4 {
+            if self.lines[be_off + i] == Signal::High {
+                off += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut bytes = 0;
+        for i in off..4 {
+            if self.lines[be_off + i] == Signal::Low {
+                bytes += 1;
+            } else {
+                break;
+            }
+        }
+
+        bytes as usize
     }
 }
 

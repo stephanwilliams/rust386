@@ -1,0 +1,138 @@
+	.section	__TEXT,__text,regular,pure_instructions
+	.macosx_version_min 10, 11
+	.globl	_main
+	.align	4, 0x90
+_main:                                  ## @main
+## BB#0:
+	pushl	%ebp
+	movl	%esp, %ebp
+	subl	$24, %esp
+	movl	$31744, %eax            ## imm = 0x7C00
+	xorl	%ecx, %ecx
+	movl	%eax, (%esp)
+	movl	$0, 4(%esp)
+	movl	%ecx, -4(%ebp)          ## 4-byte Spill
+	calll	_readsect
+	xorl	%eax, %eax
+	addl	$24, %esp
+	popl	%ebp
+	retl
+
+	.globl	_readsect
+	.align	4, 0x90
+_readsect:                              ## @readsect
+## BB#0:
+	pushl	%ebp
+	movl	%esp, %ebp
+	pushl	%edi
+	pushl	%esi
+	subl	$80, %esp
+	movl	12(%ebp), %eax
+	movl	8(%ebp), %ecx
+	movl	%ecx, -72(%ebp)
+	movl	%eax, -76(%ebp)
+	calll	_waitdisk
+	movl	$498, -64(%ebp)         ## imm = 0x1F2
+	movb	$1, -65(%ebp)
+	movb	-65(%ebp), %al
+	movl	-64(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	movl	-76(%ebp), %ecx
+	movb	%cl, %al
+	movl	$499, -56(%ebp)         ## imm = 0x1F3
+	movb	%al, -57(%ebp)
+	movb	-57(%ebp), %al
+	movl	-56(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	movl	-76(%ebp), %ecx
+	shrl	$8, %ecx
+	movb	%cl, %al
+	movl	$500, -48(%ebp)         ## imm = 0x1F4
+	movb	%al, -49(%ebp)
+	movb	-49(%ebp), %al
+	movl	-48(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	movl	-76(%ebp), %ecx
+	shrl	$16, %ecx
+	movb	%cl, %al
+	movl	$501, -40(%ebp)         ## imm = 0x1F5
+	movb	%al, -41(%ebp)
+	movb	-41(%ebp), %al
+	movl	-40(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	movl	-76(%ebp), %ecx
+	shrl	$24, %ecx
+	orl	$224, %ecx
+	movb	%cl, %al
+	movl	$502, -32(%ebp)         ## imm = 0x1F6
+	movb	%al, -33(%ebp)
+	movb	-33(%ebp), %al
+	movl	-32(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	movl	$503, -24(%ebp)         ## imm = 0x1F7
+	movb	$32, -25(%ebp)
+	movb	-25(%ebp), %al
+	movl	-24(%ebp), %edx
+	## InlineAsm Start
+	outb	%al, %dx
+	## InlineAsm End
+	calll	_waitdisk
+	movl	-72(%ebp), %ecx
+	movl	$496, -12(%ebp)         ## imm = 0x1F0
+	movl	%ecx, -16(%ebp)
+	movl	$128, -20(%ebp)
+	movl	-12(%ebp), %edx
+	movl	-16(%ebp), %ecx
+	movl	-20(%ebp), %esi
+	movl	%ecx, %edi
+	movl	%esi, %ecx
+	## InlineAsm Start
+	cld
+	repne
+	insl	%dx, %es:(%edi)
+	## InlineAsm End
+	movl	%edi, -16(%ebp)
+	movl	%ecx, -20(%ebp)
+	addl	$80, %esp
+	popl	%esi
+	popl	%edi
+	popl	%ebp
+	retl
+
+	.globl	_waitdisk
+	.align	4, 0x90
+_waitdisk:                              ## @waitdisk
+## BB#0:
+	pushl	%ebp
+	movl	%esp, %ebp
+	subl	$8, %esp
+LBB2_1:                                 ## =>This Inner Loop Header: Depth=1
+	movl	$503, -4(%ebp)          ## imm = 0x1F7
+	movl	-4(%ebp), %edx
+	## InlineAsm Start
+	inb	%dx, %al
+	## InlineAsm End
+	movb	%al, -5(%ebp)
+	movzbl	-5(%ebp), %edx
+	andl	$192, %edx
+	cmpl	$64, %edx
+	je	LBB2_3
+## BB#2:                                ##   in Loop: Header=BB2_1 Depth=1
+	jmp	LBB2_1
+LBB2_3:
+	addl	$8, %esp
+	popl	%ebp
+	retl
+
+
+.subsections_via_symbols

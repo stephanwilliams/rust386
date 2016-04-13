@@ -1,0 +1,4 @@
+clang -nostdinc bios.c -m16 -O2 -S -ffreestanding
+as mybios.s -o mybios.o
+ld -preload -seg1addr 0xf0000 mybios.o -o mybios
+otool -t mybios | tail -n +3 | perl -pE 's/^\w+ //g;' | xxd -r -p
