@@ -7,9 +7,7 @@ use clock::{ Clocked };
 use bus::{ BusState, BusLine, Signal };
 use cache::{ Cache };
 use rom::{ Rom };
-#[macro_use]
 use opcodes::{
-    AddressingMethod, OperantType, UnresolvedOperand, UnresolvedRegister, UnresolvedOp,
     UnresolvedOperands, SINGLE_OPCODE_MAP, DOUBLE_OPCODE_MAP, GROUP_MAP
 };
 use reg::{ Size, SegmentRegister, Register, RegisterFile, EFlags, RegEnum };
@@ -61,7 +59,7 @@ enum InstructionState {
 
     MOV_Bx,
 
-    IN,
+    IN_0,
 
     JMP_EA,
 
@@ -418,7 +416,7 @@ impl Intel80386 {
         },
         -> MOV_Bx if self.current_instr.opcode & 0xF0 == 0xB0,
         -> JMP_EA if self.current_instr.opcode == 0xEA,
-        -> IN if self.current_instr.opcode & 0xF6 == 0xE4
+        -> IN_0 if self.current_instr.opcode & 0xF6 == 0xE4
         ];
 
         instr_state![self, MOV_Bx -> Fetch0, {
@@ -431,21 +429,20 @@ impl Intel80386 {
             };
         }];
 
-        instr_state![self, IN -> Fetch0, {
+        instr_state![self, IN_0 -> Fetch0, {
             let (dst_reg, src_port) = match self.current_instr.operands {
                 Operands::Double(Op::Register(reg), Op::Immediate(imm)) =>
                     (reg, self.current_instr.imm as u16),
                 Operands::Double(Op::Register(reg1), Op::Register(reg2)) =>
                     (reg1, self.gen_regs.read(reg2) as u16),
-                _ => panic!("unexpected operands for IN")
+                _ => panic!("unexpected operands for IN_0")
             };
 
             let res = self.read_io_size(src_port, dst_reg.size());
             if !res.is_some() { return; }
 
-
-
-            unimplemented!();
+            trace!("write io {:x} to reg {:?}", res.unwrap(), dst_reg);
+            self.gen_regs.write(dst_reg, res.unwrap());
         }];
 
         instr_state![self, JMP_EA -> Fetch0, {
@@ -467,7 +464,44 @@ impl Intel80386 {
         }];
     }
 
-    fn bus_transfer_cycle(&mut self, bus_transfer_state: BusTransferState, state: &BusState) {
+    fn bus_transfer_cycle(&mut self, state: &BusState) {
+        match self.bus_transfer_state {
+            BusTransferState::T2 => {
+                trace!("GOT BUS READY {:?} W/R {:?} D/C {:?} M/IO {:?}",
+                       state.read(BusLine::READY),
+                       state.read(BusLine::W_R),
+                       state.read(BusLine::D_C),
+                       state.read(BusLine::M_IO));
+                if state.read(BusLine::READY)  == Signal::Low {
+
+                    self.bus_transfer_state = BusTransferState::Idle;
+                    if state.read(BusLine::D_C) == Signal::High
+                        && state.read(BusLine::W_R) == Signal::Low {
+
+                        if state.read(BusLine::W_R) == Signal::Low {
+                            match state.read(BusLine::M_IO) {
+                                Signal::Low => {
+                                    self.io_read_result = Some((
+                                            state.read_address() as u16,
+                                            state.read_data()
+                                            ))
+                                },
+                                Signal::High => {
+                                    self.cache.write(
+                                        state.read_address(),
+                                        state.read_data()
+                                        )
+                                },
+                                _ => panic!("m/io undefined")
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {
+
+            }
+        }
 
     }
 
@@ -554,8 +588,9 @@ impl Intel80386 {
         assert!((addr as u32) % count == 0, "io access must be aligned");
 
         if let Some((ioaddr, val)) = self.io_read_result {
+            trace!("IO RESULT {:08x} {:08x} VAL {:08x}", addr, ioaddr, val);
             if addr == ioaddr {
-                return T::from_u32(val);
+                return Some(T::from_u32(val).unwrap());
             }
         }
 
@@ -572,9 +607,17 @@ impl Intel80386 {
 impl Clocked<BusState, BusState> for Intel80386 {
     fn rising_edge(&mut self, state: BusState) -> BusState {
         println!("cpu rising on {:?}", self.instr_state);
+
+        if self.bus_transfer_state == BusTransferState::T2 {
+            self.bus_transfer_cycle(&state);
+        }
+
         if self.bus_transfer_state == BusTransferState::Idle {
             self.instr_cycle(&state);
-        } else {
+        }
+        
+        if self.bus_transfer_state == BusTransferState::T1 {
+            self.bus_transfer_cycle(&state);
         }
 
         BusState::new()

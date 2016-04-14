@@ -1,4 +1,5 @@
 #![feature(trace_macros)]
+#![feature(associated_consts)]
 
 #![feature(alloc)]
 #![feature(heap_api)]
@@ -35,6 +36,7 @@ mod rom;
 mod instr;
 mod iter;
 mod iobus;
+mod disk;
 
 use bus::{ Bus, BusState };
 use clock::{ HalfTimeClock, StandardClock, Clock, Clocked };
@@ -43,8 +45,10 @@ use ram::{ MemoryController };
 use rom::{ Rom };
 use iter::{ DWords };
 use iobus::{ IoBus };
+use disk::{ Disk };
 
 use std::fs::{ File };
+use std::io::{ Read };
 
 fn main() {
     env_logger::init().unwrap();
@@ -66,13 +70,19 @@ fn main() {
 
     hclock.add_clocked(cpu);
 
+    let mut kernel_img = File::open("../kernel.img").unwrap();
+    let mut kernel: Vec<u8> = vec![];
+    kernel_img.read_to_end(&mut kernel).unwrap();
+    let disk = Disk::new(kernel);
+    let mut iobus = IoBus::new();
+    iobus.map_io(disk, 0x1F0..0x1F8);
+
     let memctl = MemoryController::new(4 * 1024 * 1024 * 1024);
-    let iobus = IoBus::new();
 
     let mut bus = Bus::new();
     bus.add_clocked(hclock);
-    bus.add_clocked(memctl);
     bus.add_clocked(iobus);
+    bus.add_clocked(memctl);
 
     let mut clock: StandardClock<()> = StandardClock::new();
     clock.add_clocked(bus);

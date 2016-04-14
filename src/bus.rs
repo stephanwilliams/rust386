@@ -1,7 +1,7 @@
 use clock::{ Clocked, Clock, ClockState };
 use std::cell::RefCell;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signal {
     Undefined,
     High,
@@ -148,7 +148,7 @@ impl BusState {
 
     pub fn assert_address(&mut self, addr: u32, size: usize) {
         let off = (addr & 0b11) as usize;
-        trace!("bus assert addr {:08x} size {:08x}", addr, size);
+        trace!("bus assert addr {:08x} size {:08x} off {}", addr, size, off);
         assert!((addr % 4) + (size as u32) <= 4, "assert invalid address for size on bus");
 
         let a2_off = BusLine::A2 as usize - 2;
@@ -189,16 +189,16 @@ impl BusState {
         }
 
         let be_off = BusLine::BE0 as usize;
-        let mut count = 0;
-        while count < 3 {
-            if self.lines[be_off + count] == Signal::Low {
-                count += 1;
+        let mut ind = 0;
+        while ind < 3 {
+            if self.lines[be_off + ind] == Signal::High {
+                ind += 1;
             } else {
                 break;
             }
         }
 
-        addr + (count as u32)
+        addr + (ind as u32)
     }
 
     pub fn assert_data(&mut self, data: u32, size: usize, off: usize) {
@@ -216,6 +216,14 @@ impl BusState {
             // }
 
             for i in 0..8 {
+                // let bit_off = b * 8 + i;
+                // self.lines[d_off + bit_off] =
+                //     if off >= 2 && b< 2 {
+                //         self.lines[d_off + bit_off + 16];
+                //     } else if off <= b && b < off + size {
+                //         if (data >> )
+                //     }
+
                 self.lines[d_off + b * 8 + i] =
                     if off >= 2 && b < 2 {
                         self.lines[d_off + (b + 2) * 8 + i]
@@ -228,20 +236,27 @@ impl BusState {
                     } else { Signal::Undefined }
             }
         }
+
+        // for i in 0..32 {
+        //     trace!("D{:-2} {:?}", i, self.lines[d_off + i]);
+        // }
     }
 
     pub fn read_data(&self) -> u32 {
-        let off = BusLine::D0 as usize;
+        let d_off = BusLine::D0 as usize;
         let mut data = 0;
+        let mut off = 0;
         for b in 0..4 {
-            if self.lines[BusLine::BE0 as usize + b] == Signal::High {
+            if self.lines[BusLine::BE0 as usize + b] == Signal::Low {
                 let byte_off = b * 8;
                 for i in byte_off..byte_off + 8 {
-                    match self.lines[byte_off + off + i] {
-                        Signal::High => { data |= 1 << (i + byte_off); }
+                    match self.lines[d_off + i] {
+                        Signal::High => { data |= 1 << (i - 8 * off); }
                         _ => { }
                     }
                 }
+            } else {
+                off += 1;
             }
         }
 
@@ -317,6 +332,7 @@ impl<'a> Clock<BusState, BusState> for Bus<'a> {
 
 impl<'a> Clocked<(), ()> for Bus<'a> {
     fn rising_edge(&mut self, state: ()) {
+        trace!("BUS RISING");
         let mut s = BusState::unit();
 
         for clocked in self.clockeds.iter_mut() {
@@ -328,6 +344,7 @@ impl<'a> Clocked<(), ()> for Bus<'a> {
     }
 
     fn falling_edge(&mut self, state: ()) {
+        trace!("BUS FALLING");
         let mut s = BusState::unit();
 
         for clocked in self.clockeds.iter_mut() {
