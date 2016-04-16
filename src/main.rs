@@ -16,7 +16,7 @@ extern crate env_logger;
 
 #[macro_use]
 extern crate enum_primitive;
-extern crate num;
+extern crate num as numlib;
 
 #[macro_use]
 extern crate bitflags;
@@ -37,6 +37,7 @@ mod instr;
 mod iter;
 mod iobus;
 mod disk;
+mod num;
 
 use bus::{ Bus, BusState };
 use clock::{ HalfTimeClock, StandardClock, Clock, Clocked };

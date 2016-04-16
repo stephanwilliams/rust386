@@ -1,4 +1,4 @@
-use num::traits::{ FromPrimitive };
+use numlib::traits::{ FromPrimitive, ToPrimitive };
 
 use std::mem;
 use std::ops::{ Range, };
@@ -8,19 +8,19 @@ use bus::{ BusState, BusLine, Signal };
 use cache::{ Cache };
 use rom::{ Rom };
 use opcodes::{
-    UnresolvedOperands, SINGLE_OPCODE_MAP, DOUBLE_OPCODE_MAP, GROUP_MAP
+    UnresolvedOperands, SINGLE_OPCODE_MAP, DOUBLE_OPCODE_MAP
 };
-use reg::{ Size, SegmentRegister, Register, RegisterFile, EFlags, RegEnum };
+use reg::{ SegmentRegister, Register, RegisterFile, EFlags, RegEnum };
 use instr::{
     InstructionPrefix, SegmentOverridePrefix, Instruction,
     Operands, Op
 };
+use num::{ Num, Size, Type };
 
 type VAddr  = u32;
 type SAddr  = (u16, u16);
 type PAddr  = u32;
 type IOAddr = u16;
-
 
 #[derive(PartialEq, Eq, Debug)]
 enum BusTransferState {
@@ -50,12 +50,17 @@ enum InstructionState {
     Decode,
     MemRead,
 
-    ADD_00,
-    ADD_01,
-    ADD_02,
-    ADD_03,
-    ADD_04,
-    ADD_05,
+    GEN_OP_Read,
+    GEN_OP_Write,
+
+    ADD_0,
+    ADC_1,
+    AND_2,
+    XOR_3,
+    OR_0,
+    SBB_1,
+    SUB_2,
+    CMP_3,
 
     MOV_Bx,
 
@@ -63,16 +68,18 @@ enum InstructionState {
 
     JMP_EA,
 
+    HALT,
+
     MemWrite,
 }
 
 macro_rules! segaddr {
     ( $slf:ident, $seg:ident : $off:ident ) => {
-        ($slf.seg_regs.read(SegmentRegister::$seg) << 4) | $slf.gen_regs.read(Register::$off)
+        ($slf.seg_regs.read(SegmentRegister::$seg)._as(Type::u32) << 4) | $slf.gen_regs.read(Register::$off)
     };
 
     ( $slf:ident, $seg:ident : $off:expr ) => {
-        ($slf.seg_regs.read(SegmentRegister::$seg) << 4) | $off
+        ($slf.seg_regs.read(SegmentRegister::$seg)._as(Type::u32) << 4) | $off
     }
 }
 
@@ -146,6 +153,9 @@ pub struct Intel80386 {
     instr_did_consume_byte: bool,
 
     current_instr: Instruction,
+    op1val: Option<Num>,
+    op2val: Option<Num>,
+    op3val: Option<Num>,
 
     bus_is_write: bool, // vs write
     bus_is_data: bool, // vs control
@@ -178,6 +188,9 @@ impl Intel80386 {
             instr_did_consume_byte: true,
 
             current_instr: Instruction::new(),
+            op1val: None,
+            op2val: None,
+            op3val: None,
 
             bus_is_write: false,
             bus_is_data: false,
@@ -208,7 +221,7 @@ impl Intel80386 {
         // Instruction Prefix
         if self.instr_state == InstructionState::Fetch0 {
             debug!("START EIP: {:08x}", self.eip());
-            self.instr_eip = self.eip();
+            self.instr_eip = self.eip().to_u32().unwrap();
             self.instr_did_consume_byte = true;
             self.current_instr = Instruction::new();
         }
@@ -305,7 +318,7 @@ impl Intel80386 {
             self.current_instr.opcode = (self.current_instr.opcode << 8) | (self.instr_byte as u16);
             debug!("opcode second byte: {:02x}", self.instr_byte);
 
-            self.current_instr.unresolved_operands = DOUBLE_OPCODE_MAP[self.current_instr.opcode as usize];
+            self.current_instr.unresolved_operands = DOUBLE_OPCODE_MAP[self.instr_byte as usize];
             match self.current_instr.unresolved_operands {
                 UnresolvedOperands::NotImplemented => { panic!("Opcode {:02x} not implemented", self.current_instr.opcode); },
                 UnresolvedOperands::Invalid => { panic!("Invalid opcode {:02x}", self.current_instr.opcode); },
@@ -322,20 +335,18 @@ impl Intel80386 {
                 debug!("modrm: {:02x}", self.instr_byte);
                 self.current_instr.modrm = Some(self.instr_byte);
             }
-
-            self.current_instr.resolve();
-            trace!("disp: {:08}({:?}) imm: {:08x}({:?})",
-                self.current_instr.disp,
-                self.current_instr.disp_sz,
-                self.current_instr.imm,
-                self.current_instr.imm_sz);
         },
         consumed if self.current_instr.modrm.is_some()];
 
 
         // SIB Byte
         instr_state![self, Fetch7 -> Fetch8, {
-            // nothing to do here?
+            self.current_instr.resolve();
+            trace!("disp: {:08}({:?}) imm: {:08x}({:?})",
+                self.current_instr.disp,
+                self.current_instr.disp_sz,
+                self.current_instr.imm,
+                self.current_instr.imm_sz);
         },
         consumed if self.current_instr.has_sib()];
 
@@ -412,12 +423,74 @@ impl Intel80386 {
         }];
 
         instr_state![self, MemRead -> MemRead, {
-
+            
         },
+        -> GEN_OP_Read if self.current_instr.opcode & 0xC2 == 0x00,
         -> MOV_Bx if self.current_instr.opcode & 0xF0 == 0xB0,
         -> JMP_EA if self.current_instr.opcode == 0xEA,
         -> IN_0 if self.current_instr.opcode & 0xF6 == 0xE4
         ];
+
+        instr_state![self, GEN_OP_Read -> HALT, {
+            match self.current_instr.operands {
+                Operands::Double(op1, op2) => {
+                    match self.read_op(op1) {
+                        Some(op1val) => match self.read_op(op2) {
+                            Some(op2val) => {
+                                self.op1val = Some(op1val);
+                                self.op2val = Some(op2val);
+                            },
+                            None => return
+                        },
+                        None => return
+                    }
+                },
+                _ => panic!("unrecognized gen op operand")
+            };
+
+            trace!("ops {:?} {:?}", self.op1val, self.op2val);
+        },
+        -> ADD_0 if self.current_instr.opcode & 0x38 == 0x00,
+        -> ADC_1 if self.current_instr.opcode & 0x38 == 0x10,
+        -> AND_2 if self.current_instr.opcode & 0x38 == 0x20,
+        -> XOR_3 if self.current_instr.opcode & 0x38 == 0x30,
+        -> OR_0  if self.current_instr.opcode & 0x38 == 0x08,
+        -> SBB_1 if self.current_instr.opcode & 0x38 == 0x18,
+        -> SUB_2 if self.current_instr.opcode & 0x38 == 0x28,
+        -> CMP_3 if self.current_instr.opcode & 0x38 == 0x38
+        ];
+
+        instr_state![self, ADD_0 -> GEN_OP_Write, {
+
+        }];
+
+        instr_state![self, ADC_1 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, AND_2 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, XOR_3 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, OR_0 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, SBB_1 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, SUB_2 -> GEN_OP_Write, {
+            
+        }];
+
+        instr_state![self, CMP_3 -> GEN_OP_Write, {
+            
+        }];
 
         instr_state![self, MOV_Bx -> Fetch0, {
             trace!("{:?}", self.current_instr.operands);
@@ -434,7 +507,7 @@ impl Intel80386 {
                 Operands::Double(Op::Register(reg), Op::Immediate(imm)) =>
                     (reg, self.current_instr.imm as u16),
                 Operands::Double(Op::Register(reg1), Op::Register(reg2)) =>
-                    (reg1, self.gen_regs.read(reg2) as u16),
+                    (reg1, self.gen_regs.read(reg2).0 as u16),
                 _ => panic!("unexpected operands for IN_0")
             };
 
@@ -461,6 +534,10 @@ impl Intel80386 {
                 // protected mode
                 unimplemented!();
             }
+        }];
+
+        instr_state![self, HALT -> HALT, {
+            trace!("halt");
         }];
     }
 
@@ -511,12 +588,70 @@ impl Intel80386 {
         Size::Size16 // TODO
     }
 
-    fn eip(&self) -> u32 {
+    fn eip(&self) -> Num {
         // TODO: protected mode
         segaddr![self, CS:self.eip] | if self.has_ljmped { 0 } else { 0xFFF00000 }
     }
 
+    fn read_op(&mut self, op: Op) -> Option<Num> {
+        match op {
+            Op::Register(reg) => Some(self.gen_regs.read(reg)),
+            Op::SegmentRegister(reg) => Some(self.seg_regs.read(reg)),
+            Op::FlagsRegister(sz) => Some(Num(self.eflags.bits(), sz.unsigned())),
+            Op::MemoryAddress(seg_reg, base, index, scale, disp_sz, size) => {
+                let addr = self.calc_address(seg_reg, base, index, scale, disp_sz);
+                self.mmu_read_mem_sz(addr.to_u32().unwrap(), size)
+                    .map_or(None, |val| Some(Num(val, size.unsigned())))
+            },
+            Op::Immediate(sz) => Some(Num(self.current_instr.imm, sz.signed())),
+            _ => panic!("unhandled read op")
+        }
+    }
+
+    fn calc_address(&mut self, seg_reg: SegmentRegister, base: Option<Register>,
+        index: Option<Register>, scale: u8, disp_sz: Option<Size>) -> Num {
+        let z = Num(0, self.current_instr.addr_sz.unsigned());
+        
+        self.seg_addr(seg_reg)
+            + base.map_or(z, |reg| self.gen_regs.read(reg))
+            + index.map_or(z, |reg| self.gen_regs.read(reg) << (scale as usize))
+            + disp_sz.map_or(z,
+                |sz| Num(self.current_instr.disp, sz.signed()))
+    }
+
+    fn seg_addr(&self, seg_reg: SegmentRegister) -> Num {
+        // TODO: protected mode
+        self.seg_regs.read(seg_reg) << 4
+    }
+
+    fn update_flags(&mut self, num: Num, cf: bool, af: bool, of: bool) {
+        self.update_flag(::reg::EFLAGS_CF, cf);
+        self.update_flag(::reg::EFLAGS_PF, num.low_byte_parity());
+        self.update_flag(::reg::EFLAGS_AF, af); // decimal arith, not needed (?)
+        self.update_flag(::reg::EFLAGS_ZF, num == 0);
+        self.update_flag(::reg::EFLAGS_SF, num < 0);
+        self.update_flag(::reg::EFLAGS_OF, of);
+    }
+
+    fn update_flag(&mut self, flag: EFlags, pred: bool) {
+        if pred {
+            self.eflags.remove(flag);
+        } else {
+            self.eflags.insert(flag);
+        }
+    }
+
     // MMU functions
+
+    fn mmu_read_mem_sz(&mut self, vaddr: VAddr, size: Size) -> Option<u32> {
+        let paddr = vaddr as PAddr;
+        match size {
+            Size::Size8 =>  self.mmu_read_mem::<u8 >(paddr).map(|x| x as u32),
+            Size::Size16 => self.mmu_read_mem::<u16>(paddr).map(|x| x as u32),
+            Size::Size32 => self.mmu_read_mem::<u32>(paddr),
+            _ => panic!("unhandled read size")
+        }
+    }
 
     fn mmu_read_mem<T>(&mut self, paddr: PAddr) -> Option<T> where T: FromPrimitive {
         assert!(self.bus_transfer_state == BusTransferState::Idle);

@@ -1,18 +1,125 @@
-use num::traits::ToPrimitive;
+use numlib::traits::ToPrimitive;
 
 use opcodes::{
     UnresolvedOperands, UnresolvedOperand, UnresolvedRegister, UnresolvedOp,
     AddressingMethod, OperantType
 };
-use reg::{ Size, Register, SegmentRegister, RegEnum };
+use reg::{ Register, SegmentRegister, RegEnum };
+use num::{ Size };
+
+// base + ind * scale + disp
+// Option<Register> Option<Register> Size Size
 
 macro_rules! addr_form {
-    ([$reg1:ident + $reg2:ident] + disp8) => {
+    ($size:ident, $oseg:ident, $seg:ident,
+     [--]) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            None,
+            None,
+            1,
+            None,
+            $size
+        )
+    };
 
+    ($size:ident, $oseg:ident, $seg:ident,
+     [--] + $off:ident) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            None,
+            None,
+            1,
+            Some(Size::$off),
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident + $ind:ident * $scale:expr] + $off:ident) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            Some(Register::$ind),
+            $scale,
+            Some(Size::$off),
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident + $ind:ident * $scale:expr]) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            Some(Register::$ind),
+            $scale,
+            None,
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident + $ind:ident] + $off:ident) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            Some(Register::$ind),
+            1,
+            Some(Size::$off),
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident + $ind:ident]) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            Some(Register::$ind),
+            1,
+            None,
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident]) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            None,
+            1,
+            None,
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     [$base:ident] + $off:ident) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            Some(Register::$base),
+            None,
+            1,
+            Some(Size::$off),
+            $size
+        )
+    };
+
+    ($size:ident, $oseg:ident, $seg:ident,
+     $off:ident) => {
+        Op::MemoryAddress(
+            $oseg.unwrap_or(SegmentRegister::$seg),
+            None,
+            None,
+            1,
+            Some(Size::$off),
+            $size
+        )
     };
 }
 
-addr_form!([BX + SI] + disp8);
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum InstructionPrefix {
@@ -31,6 +138,20 @@ pub enum SegmentOverridePrefix {
     ES,
     FS,
     GS
+}
+
+impl SegmentOverridePrefix {
+    pub fn to_seg_reg(self) -> Option<SegmentRegister> {
+        match self {
+            SegmentOverridePrefix::CS => Some(SegmentRegister::CS),
+            SegmentOverridePrefix::SS => Some(SegmentRegister::SS),
+            SegmentOverridePrefix::DS => Some(SegmentRegister::DS),
+            SegmentOverridePrefix::ES => Some(SegmentRegister::ES),
+            SegmentOverridePrefix::FS => Some(SegmentRegister::FS),
+            SegmentOverridePrefix::GS => Some(SegmentRegister::GS),
+            SegmentOverridePrefix::None => None
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -212,7 +333,11 @@ impl Instruction {
             // ModR/M specifies operand; gen reg or mem addr. If mem addr,
             // address is computed from seg reg and: base reg, index reg, scaling factor, or
             // displacement
-            AddressingMethod::E => /* ???????????????????? */ unimplemented!(),
+            AddressingMethod::E => match self.modrm_mod().unwrap() {
+                0b00 | 0b01 | 0b10 => self.resolve_addr_form(first),
+                0b11 => Op::Register(Register::decode(self.modrm_mod().unwrap(), first)),
+                _ => panic!("invalid modrm mod")
+            },
             // flags register
             AddressingMethod::F => Op::FlagsRegister(first),
             // Reg field of ModR/M byte selects gen reg
@@ -328,6 +453,110 @@ impl Instruction {
             UnresolvedRegister::DS => Op::SegmentRegister(SegmentRegister::DS),
         }
     }
+
+    fn sib_index_to_reg(&self) -> Option<Register> {
+        if let Some(index) = self.sib_index() {
+            return match index {
+                0b000 => Some(Register::EAX),
+                0b001 => Some(Register::ECX),
+                0b010 => Some(Register::EDX),
+                0b011 => Some(Register::EBX),
+                0b100 => None,
+                0b101 => Some(Register::EBP),
+                0b110 => Some(Register::ESI),
+                0b111 => Some(Register::EDI),
+                _ => panic!("invalid sib index")
+            };
+        }
+
+        None
+    }
+
+    fn sib_ss_to_size(&self) -> u8 {
+        1 << self.sib_ss().unwrap()
+    }
+
+    fn resolve_addr_form(&mut self, size: Size) -> Op {
+        let modrm_mod = self.modrm_mod().unwrap();
+        let modrm_rm = self.modrm_rm().unwrap();
+        let seg = 
+            self.sib_index_to_reg()
+            .and_then(|reg| match reg {
+                Register::EBP => Some(SegmentRegister::SS),
+                _ => None
+            })
+            .or(self.seg_override_prefix.to_seg_reg());
+
+        assert!(modrm_mod != 0b11);
+
+        let ss = self.sib_ss();
+
+        let addr_form = (match self.op_sz {
+            Size::Size16 => [[
+                addr_form!(size, seg, DS, [BX + SI]),
+                addr_form!(size, seg, DS, [BX + DI]),
+                addr_form!(size, seg, SS, [BP + SI]),
+                addr_form!(size, seg, SS, [BP + DI]),
+                addr_form!(size, seg, DS, [SI]),
+                addr_form!(size, seg, DS, [DI]),
+                addr_form!(size, seg, DS, Size16),
+                addr_form!(size, seg, DS, [BX]),
+            ],[
+                addr_form!(size, seg, DS, [BX + SI] + Size8),
+                addr_form!(size, seg, DS, [BX + DI] + Size8),
+                addr_form!(size, seg, SS, [BP + SI] + Size8),
+                addr_form!(size, seg, SS, [BP + DI] + Size8),
+                addr_form!(size, seg, DS, [SI] + Size8),
+                addr_form!(size, seg, DS, [DI] + Size8),
+                addr_form!(size, seg, SS, [BP] + Size8),
+                addr_form!(size, seg, DS, [BX] + Size8),
+            ],[
+                addr_form!(size, seg, DS, [BX + SI] + Size16),
+                addr_form!(size, seg, DS, [BX + DI] + Size16),
+                addr_form!(size, seg, SS, [BP + SI] + Size16),
+                addr_form!(size, seg, SS, [BP + DI] + Size16),
+                addr_form!(size, seg, DS, [SI] + Size16),
+                addr_form!(size, seg, DS, [DI] + Size16),
+                addr_form!(size, seg, SS, [BP] + Size16),
+                addr_form!(size, seg, DS, [BX] + Size16),
+            ]],
+            Size::Size32 => [[
+                addr_form!(size, seg, DS, [EAX]),
+                addr_form!(size, seg, DS, [ECX]),
+                addr_form!(size, seg, DS, [EDX]),
+                addr_form!(size, seg, DS, [EBX]),
+                addr_form!(size, seg, DS, [--]), // !!!!!!
+                addr_form!(size, seg, DS, Size32),
+                addr_form!(size, seg, DS, [ESI]),
+                addr_form!(size, seg, DS, [EDI]),
+            ],[
+                addr_form!(size, seg, DS, [EAX] + Size8),
+                addr_form!(size, seg, DS, [ECX] + Size8),
+                addr_form!(size, seg, DS, [EDX] + Size8),
+                addr_form!(size, seg, DS, [EBX] + Size8),
+                addr_form!(size, seg, DS, [--] + Size8), // !!!!!
+                addr_form!(size, seg, SS, [EBP] + Size8),
+                addr_form!(size, seg, DS, [ESI] + Size8),
+                addr_form!(size, seg, DS, [EDI] + Size8),
+            ],[
+                addr_form!(size, seg, DS, [EAX] + Size32),
+                addr_form!(size, seg, DS, [ECX] + Size32),
+                addr_form!(size, seg, DS, [EDX] + Size32),
+                addr_form!(size, seg, DS, [EBX] + Size32),
+                addr_form!(size, seg, DS, [--] + Size32), // !!!!!
+                addr_form!(size, seg, SS, [EBP] + Size32),
+                addr_form!(size, seg, DS, [ESI] + Size32),
+                addr_form!(size, seg, DS, [EDI] + Size32),
+            ]],
+            _ => panic!("invalid operand size for addr form")
+        })[modrm_mod as usize][modrm_rm as usize];
+
+        if let Op::MemoryAddress(_, _, _, _, Some(disp), _) = addr_form {
+            self.set_disp_sz_once(disp);
+        }
+
+        addr_form
+    }
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]
@@ -337,10 +566,17 @@ pub enum Op {
     FlagsRegister(Size),
     Memory1(Size),
     Memory2(Size, Size),
+    MemoryAddress(
+        SegmentRegister,
+        Option<Register>,
+        Option<Register>,
+        u8,
+        Option<Size>,
+        Size),
     Immediate(Size),
     RelativeAddress(Size),
     MemoryOffset(Size),
-    Pointer(Size)
+    Pointer(Size),
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]

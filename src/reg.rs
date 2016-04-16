@@ -1,5 +1,5 @@
-use std::ops::{ Not };
-use num::traits::{ FromPrimitive, ToPrimitive };
+use numlib::traits::{ FromPrimitive, ToPrimitive };
+use num::{ Num, Size };
 
 bitflags! {
     pub flags EFlags: u32 {
@@ -21,28 +21,6 @@ bitflags! {
         const EFLAGS_RF         = 0b00000000000000010000000000000000,
         const EFLAGS_VM         = 0b00000000000000100000000000000000,
         const EFLAGS_RESERVED   = 0b11111111111111000000000000000000
-    }
-}
-
-enum_primitive! {
-    #[derive(PartialEq, Eq, Debug, Clone, Copy)]
-    pub enum Size {
-        Size8  = 1,
-        Size16 = 2,
-        Size32 = 4,
-        Size48 = 6
-    }
-}
-
-impl Not for Size {
-    type Output = Size;
-
-    fn not(self) -> Size {
-        match self {
-            Size::Size16 => Size::Size32,
-            Size::Size32 => Size::Size16,
-            _ => self
-        }
     }
 }
 
@@ -190,7 +168,7 @@ impl<T> RegisterFile<T> where T: RegEnum {
         }
     }
 
-    pub fn read(&self, reg: T) -> u32 {
+    pub fn read(&self, reg: T) -> Num {
         let enc = reg.to_u32().unwrap();
         let ind = (enc >> 2) as usize;
         let val = self.regs[ind];
@@ -203,7 +181,7 @@ impl<T> RegisterFile<T> where T: RegEnum {
             _ => panic!("invalid register")
         };
         debug!("read reg {:03b} as {:08x}", ind, a);
-        a
+        Num(a, reg.size().unsigned())
     }
 
     pub fn write(&mut self, reg: T, val: u32) {
