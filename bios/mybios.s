@@ -1,9 +1,7 @@
     .macosx_version_min 10, 11
     .globl	start
-    .align	4, 0x90
 start:
     .code16
-	.align	4, 0x90
 waitdisk1:
 	movl	$0x1F7, %edx
 	inb	%dx, %al
@@ -36,7 +34,6 @@ waitdisk1:
 	movl	$0x1F7, %edx
 	outb	%al, %dx
 
-	.align	4, 0x90
 waitdisk2:
 	movl	$0x1F7, %edx
 	inb	%dx, %al
@@ -52,4 +49,4 @@ waitdisk2:
 	repne insl	%dx, %es:(%edi)
 
 	ljmp $0x0000, $0x7C00
-	.align 4, 0x90
+.align 2, 0x90

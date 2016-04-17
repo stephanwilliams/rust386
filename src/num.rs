@@ -38,12 +38,17 @@ macro_rules! cast_to {
 }
 
 macro_rules! cast_op {
+    ($lhs:expr; $op:ident; $rhs:expr; $ty:ident; ($ty1:ty, $ty2:ty)) => ({
+        let (a, b) = ($lhs as $ty).$op($rhs as $ty);
+        (a as $ty1, b as $ty2)
+    });
+
     ($lhs:expr; $op:ident; $rhs:expr; $ty:ident; $tty:ty) =>
         (expr!((($lhs as $ty).$op($rhs as $ty)) as $tty));
 }
 
 macro_rules! sized_op {
-    ($lhs:ident $op:ident $rhs:expr; $ty:ty) =>
+    ($lhs:ident $op:ident $rhs:expr; $ty:tt) =>
         (match $lhs.1 {
             Type::u8  => cast_op![$lhs.0; $op; $rhs; u8 ; $ty],
             Type::u16 => cast_op![$lhs.0; $op; $rhs; u16; $ty],
@@ -133,9 +138,74 @@ impl Num {
         Num(cast_to![self, ty], ty)
     }
 
+    pub fn size(&self) -> Size {
+        match self.1 {
+            Type::i8  | Type::u8  => Size::Size8,
+            Type::i16 | Type::u16 => Size::Size16,
+            Type::i32 | Type::u32 => Size::Size32
+        }
+    }
+
     pub fn low_byte_parity(&self) -> bool {
         (self.0 & 0xFF).count_ones() % 2 == 0
     }
+
+    pub fn to_signed(&self) -> Num {
+        match self.1 {
+            Type::u8  => Num((self.0 as i8 ) as u32, Type::i8 ),
+            Type::u16 => Num((self.0 as i16) as u32, Type::i16),
+            Type::u32 => Num((self.0 as i32) as u32, Type::i32),
+            _ => *self
+        }
+    }
+
+    pub fn to_unsigned(&self) -> Num {
+        match self.1 {
+            Type::i8  => Num((self.0 as u8 ) as u32, Type::u8 ),
+            Type::i16 => Num((self.0 as u16) as u32, Type::u16),
+            Type::i32 => Num((self.0 as u32) as u32, Type::u32),
+            _ => *self
+        }
+    }
+
+    pub fn is_sign_bit_set(&self) -> bool {
+        match self.1 {
+            Type::i8  | Type::u8  => self.0 & 0xF0 != 0,
+            Type::i16 | Type::u16 => self.0 & 0xF000 != 0,
+            Type::i32 | Type::u32 => self.0 & 0xF0000000 != 0
+        }
+    }
+
+    pub fn overflowing_add(self, rhs: Num) -> (Num, bool)  {
+        assert!(self.1 == rhs.1);
+        let x = sized_op![self overflowing_add rhs.0; (u32, bool)];
+        (Num(x.0, self.1), x.1)
+    }
+
+    pub fn overflowing_sub(self, rhs: Num) -> (Num, bool)  {
+        assert!(self.1 == rhs.1);
+        let x = sized_op![self overflowing_sub rhs.0; (u32, bool)];
+        (Num(x.0, self.1), x.1)
+    }
+
+    pub fn overflowing_mul(self, rhs: Num) -> (Num, bool)  {
+        assert!(self.1 == rhs.1);
+        let x = sized_op![self overflowing_mul rhs.0; (u32, bool)];
+        (Num(x.0, self.1), x.1)
+    }
+
+    pub fn overflowing_div(self, rhs: Num) -> (Num, bool)  {
+        assert!(self.1 == rhs.1);
+        let x = sized_op![self overflowing_div rhs.0; (u32, bool)];
+        (Num(x.0, self.1), x.1)
+    }
+
+    pub fn overflowing_rem(self, rhs: Num) -> (Num, bool)  {
+        assert!(self.1 == rhs.1);
+        let x = sized_op![self overflowing_rem rhs.0; (u32, bool)];
+        (Num(x.0, self.1), x.1)
+    }
+
 }
 
 impl PartialOrd<Num> for Num {
@@ -269,13 +339,14 @@ impl LowerHex for Num {
 
 impl ToPrimitive for Num {
     fn to_u64(&self) -> Option<u64> {
-        Some(self.0 as u64)
+        Some(cast![self, u64])
     }
 
     fn to_i64(&self) -> Option<i64> {
-        Some(self.0 as i64)
+        Some(cast![self, i64])
     }
 }
+
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Type {
@@ -299,7 +370,7 @@ enum_primitive! {
 
 impl Size {
     pub fn mask(self) -> u32 {
-        ((1 << ((self as u64) * 8)) - 1) as u32
+        0xFFFFFFFF >> (32 - (self as u32) * 8)
     }
 
     pub fn signed(self) -> Type {

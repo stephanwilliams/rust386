@@ -88,7 +88,7 @@ fn main() {
     let mut clock: StandardClock<()> = StandardClock::new();
     clock.add_clocked(bus);
 
-    for _ in 0..16 {
+    loop {
         clock.rising_edge(());
         clock.falling_edge(());
     }

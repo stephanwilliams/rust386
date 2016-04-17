@@ -81,7 +81,9 @@ pub enum UnresolvedOperands {
     Single(UnresolvedOp),
     Double(UnresolvedOp, UnresolvedOp),
     Triple(UnresolvedOp, UnresolvedOp, UnresolvedOp),
-    Group(usize)
+    Group(usize),
+    GroupSingle(usize, UnresolvedOp),
+    GroupDouble(usize, UnresolvedOp, UnresolvedOp)
 }
 
 impl UnresolvedOperands {
@@ -90,7 +92,9 @@ impl UnresolvedOperands {
             UnresolvedOperands::Single(op1) => op1.has_modrm(),
             UnresolvedOperands::Double(op1, op2) => op1.has_modrm() || op2.has_modrm(),
             UnresolvedOperands::Triple(op1, op2, op3) => op1.has_modrm() || op2.has_modrm() || op3.has_modrm(),
-            UnresolvedOperands::Group(grp) => true,
+            UnresolvedOperands::Group(_) => true,
+            UnresolvedOperands::GroupSingle(_, _) => true,
+            UnresolvedOperands::GroupDouble(_, _, _) => true,
             _ => false,
         }
     }
@@ -106,6 +110,45 @@ impl UnresolvedOperands {
 // * Group
 
 macro_rules! op {
+    (grp $grp:expr) =>
+        (UnresolvedOperands::Group($grp));
+
+    (grp $grp:expr, reg $reg1:ident) =>
+        (UnresolvedOperands::GroupSingle(
+                $grp,
+                UnresolvedOp::Register(UnresolvedRegister::$reg1)
+                ));
+    (grp $grp:expr, $addr1:ident $opty1:ident) =>
+        (UnresolvedOperands::GroupSingle(
+                $grp,
+                UnresolvedOp::Operand(UnresolvedOperand { addr_method: AddressingMethod::$addr1, op_type: OperantType::$opty1 })
+                ));
+
+    (grp $grp:expr, reg $reg1:ident, reg $reg2:ident) =>
+        (UnresolvedOperands::GroupDouble(
+                $grp,
+                UnresolvedOp::Register(UnresolvedRegister::$reg1),
+                UnresolvedOp::Register(UnresolvedRegister::$reg2)
+                ));
+    (grp $grp:expr, reg $reg1:ident, $addr2:ident $opty2:ident) =>
+        (UnresolvedOperands::GroupDouble(
+                $grp,
+                UnresolvedOp::Register(UnresolvedRegister::$reg1),
+                UnresolvedOp::Operand(UnresolvedOperand { addr_method: AddressingMethod::$addr2, op_type: OperantType::$opty2 })
+                ));
+    (grp $grp:expr, $addr1:ident $opty1:ident, reg $reg2:ident) =>
+        (UnresolvedOperands::GroupDouble(
+                $grp,
+                UnresolvedOp::Operand(UnresolvedOperand { addr_method: AddressingMethod::$addr1, op_type: OperantType::$opty1 }),
+                UnresolvedOp::Register(UnresolvedRegister::$reg2)
+                ));
+    (grp $grp:expr, $addr1:ident $opty1:ident, $addr2:ident $opty2:ident) =>
+        (UnresolvedOperands::GroupDouble(
+                $grp,
+                UnresolvedOp::Operand(UnresolvedOperand { addr_method: AddressingMethod::$addr1, op_type: OperantType::$opty1 }),
+                UnresolvedOp::Operand(UnresolvedOperand { addr_method: AddressingMethod::$addr2, op_type: OperantType::$opty2 })
+                ));
+
     (reg $reg1:ident) =>
         (UnresolvedOperands::Single(
                 UnresolvedOp::Register(UnresolvedRegister::$reg1)
@@ -254,12 +297,12 @@ pub static SINGLE_OPCODE_MAP: [UnresolvedOperands; 256] = [
         /* 0x2E */ inval!(),
         /* 0x2F */ no_impl!(),
 
-        /* 0x30 */ no_impl!(),
-        /* 0x31 */ no_impl!(),
-        /* 0x32 */ no_impl!(),
-        /* 0x33 */ no_impl!(),
-        /* 0x34 */ no_impl!(),
-        /* 0x35 */ no_impl!(),
+        /* 0x30 */ op!(E b, G b),
+        /* 0x31 */ op!(E v, G v),
+        /* 0x32 */ op!(G b, E b),
+        /* 0x33 */ op!(G v, E v),
+        /* 0x34 */ op!(reg AL, I b),
+        /* 0x35 */ op!(reg eAX, I v),
         /* 0x36 */ inval!(),
         /* 0x37 */ no_impl!(),
         /* 0x38 */ no_impl!(),
@@ -317,32 +360,32 @@ pub static SINGLE_OPCODE_MAP: [UnresolvedOperands; 256] = [
         /* 0x69 */ no_impl!(),
         /* 0x6A */ no_impl!(),
         /* 0x6B */ op!(G v, E v, I v),
-        /* 0x6C */ no_impl!(),
-        /* 0x6D */ no_impl!(),
+        /* 0x6C */ op!(Y b, reg DX),
+        /* 0x6D */ op!(Y v, reg DX),
         /* 0x6E */ no_impl!(),
         /* 0x6F */ no_impl!(),
 
-        /* 0x70 */ no_impl!(),
-        /* 0x71 */ no_impl!(),
-        /* 0x72 */ no_impl!(),
-        /* 0x73 */ no_impl!(),
-        /* 0x74 */ no_impl!(),
-        /* 0x75 */ no_impl!(),
-        /* 0x76 */ no_impl!(),
-        /* 0x77 */ no_impl!(),
-        /* 0x78 */ no_impl!(),
-        /* 0x79 */ no_impl!(),
-        /* 0x7A */ no_impl!(),
-        /* 0x7B */ no_impl!(),
-        /* 0x7C */ no_impl!(),
-        /* 0x7D */ no_impl!(),
-        /* 0x7E */ no_impl!(),
-        /* 0x7F */ no_impl!(),
+        /* 0x70 */ op!(J b),
+        /* 0x71 */ op!(J b),
+        /* 0x72 */ op!(J b),
+        /* 0x73 */ op!(J b),
+        /* 0x74 */ op!(J b),
+        /* 0x75 */ op!(J b),
+        /* 0x76 */ op!(J b),
+        /* 0x77 */ op!(J b),
+        /* 0x78 */ op!(J b),
+        /* 0x79 */ op!(J b),
+        /* 0x7A */ op!(J b),
+        /* 0x7B */ op!(J b),
+        /* 0x7C */ op!(J b),
+        /* 0x7D */ op!(J b),
+        /* 0x7E */ op!(J b),
+        /* 0x7F */ op!(J b),
 
         /* 0x80 */ no_impl!(),
         /* 0x81 */ no_impl!(),
         /* 0x82 */ inval!(),
-        /* 0x83 */ no_impl!(),
+        /* 0x83 */ op!(grp 1, E v, I b),
         /* 0x84 */ no_impl!(),
         /* 0x85 */ no_impl!(),
         /* 0x86 */ no_impl!(),
@@ -466,14 +509,14 @@ pub static SINGLE_OPCODE_MAP: [UnresolvedOperands; 256] = [
         /* 0xF5 */ no_impl!(),
         /* 0xF6 */ no_impl!(),
         /* 0xF7 */ no_impl!(),
-        /* 0xF8 */ no_impl!(),
-        /* 0xF9 */ no_impl!(),
-        /* 0xFA */ no_impl!(),
-        /* 0xFB */ no_impl!(),
-        /* 0xFC */ no_impl!(),
-        /* 0xFD */ no_impl!(),
+        /* 0xF8 */ none!(),
+        /* 0xF9 */ none!(),
+        /* 0xFA */ none!(),
+        /* 0xFB */ none!(),
+        /* 0xFC */ none!(),
+        /* 0xFD */ none!(),
         /* 0xFE */ no_impl!(),
-        /* 0xFF */ grp!(5),
+        /* 0xFF */ op!(grp 5),
 ];
 
 pub static DOUBLE_OPCODE_MAP: [UnresolvedOperands; 256] = [
@@ -670,8 +713,8 @@ pub static DOUBLE_OPCODE_MAP: [UnresolvedOperands; 256] = [
         /* 0xB3 */ no_impl!(),
         /* 0xB4 */ no_impl!(),
         /* 0xB5 */ no_impl!(),
-        /* 0xB6 */ no_impl!(),
-        /* 0xB7 */ no_impl!(),
+        /* 0xB6 */ op!(G v, E b),
+        /* 0xB7 */ op!(G v, E w),
         /* 0xB8 */ inval!(),
         /* 0xB9 */ inval!(),
         /* 0xBA */ no_impl!(),

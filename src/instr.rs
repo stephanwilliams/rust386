@@ -2,7 +2,7 @@ use numlib::traits::ToPrimitive;
 
 use opcodes::{
     UnresolvedOperands, UnresolvedOperand, UnresolvedRegister, UnresolvedOp,
-    AddressingMethod, OperantType
+    AddressingMethod, OperantType, GROUP_MAP
 };
 use reg::{ Register, SegmentRegister, RegEnum };
 use num::{ Size };
@@ -235,7 +235,7 @@ impl Instruction {
 
     pub fn modrm_regop(&self) -> Option<u8> {
         if let Some(modrm) = self.modrm {
-            Some((modrm >> 2) & 0x7)
+            Some((modrm >> 3) & 0x7)
         } else {
             None
         }
@@ -243,7 +243,7 @@ impl Instruction {
 
     pub fn modrm_rm(&self) -> Option<u8> {
         if let Some(modrm) = self.modrm {
-            Some(modrm & 0x3)
+            Some(modrm & 0x7)
         } else {
             None
         }
@@ -267,7 +267,7 @@ impl Instruction {
 
     pub fn sib_base(&self) -> Option<u8> {
         if let Some(sib) = self.sib {
-            Some(sib & 0x3)
+            Some(sib & 0x7)
         } else {
             None
         }
@@ -300,7 +300,47 @@ impl Instruction {
                 self.resolve_op(uop2),
                 self.resolve_op(uop3)
                 ),
+            UnresolvedOperands::Group(grp) => self.resolve_grp(grp, &[]),
+            UnresolvedOperands::GroupSingle(grp, uop1) => self.resolve_grp(grp, &[uop1]),
+            UnresolvedOperands::GroupDouble(grp, uop1, uop2) => self.resolve_grp(grp, &[uop1, uop2]),
             _ => panic!("resolve invalid instr")
+        };
+    }
+
+    fn resolve_grp(&mut self, grp: usize, grp_ops: &[UnresolvedOp]) -> Operands {
+        let op = self.modrm_regop().unwrap() as usize;
+        let ugrp = GROUP_MAP[grp - 1][op];
+        match grp_ops.len() {
+            0 => match ugrp {
+                UnresolvedOperands::None => Operands::None,
+                UnresolvedOperands::Single(uop1) => Operands::Single(
+                    self.resolve_op(uop1)
+                    ),
+                UnresolvedOperands::Double(uop1, uop2) => Operands::Double(
+                    self.resolve_op(uop1),
+                    self.resolve_op(uop2)
+                    ),
+                UnresolvedOperands::Triple(uop1, uop2, uop3) => Operands::Triple(
+                    self.resolve_op(uop1),
+                    self.resolve_op(uop2),
+                    self.resolve_op(uop3)
+                    ),
+                _ => panic!("resolve invalid instr")
+            },
+            1 => {
+                assert!(ugrp == UnresolvedOperands::None, "combine ops");
+                Operands::Single(
+                    self.resolve_op(grp_ops[0])
+                )
+            },
+            2 => {
+                assert!(ugrp == UnresolvedOperands::None, "combine ops");
+                Operands::Double(
+                    self.resolve_op(grp_ops[0]),
+                    self.resolve_op(grp_ops[1])
+                )
+            },
+            _ => panic!("unexpected group op count")
         }
     }
 
@@ -335,7 +375,7 @@ impl Instruction {
             // displacement
             AddressingMethod::E => match self.modrm_mod().unwrap() {
                 0b00 | 0b01 | 0b10 => self.resolve_addr_form(first),
-                0b11 => Op::Register(Register::decode(self.modrm_mod().unwrap(), first)),
+                0b11 => Op::Register(Register::decode(self.modrm_rm().unwrap(), first)),
                 _ => panic!("invalid modrm mod")
             },
             // flags register
@@ -349,7 +389,10 @@ impl Instruction {
                 Op::Immediate(first)
             },
             // Instr contains relative offset to be added to eIP (short JMP, LOOP)
-            AddressingMethod::J => Op::RelativeAddress(first),
+            AddressingMethod::J => {
+                self.set_imm_sz_once(first);
+                Op::RelativeAddress(first)
+            },
             // ModR/M may only refer to memory (BOUND, LES, LDS, LSS, LFS, LGS)
             AddressingMethod::M =>
                 if opty.1.is_some() {
@@ -372,9 +415,23 @@ impl Instruction {
             // Reg field of ModR/M selects test register
             AddressingMethod::T => unimplemented!(),
             // Memory addressed by DS:SI (MOVS, COMPS, OUTS, LODS, SCAS)
-            AddressingMethod::X => /* for now */ unimplemented!(),
+            AddressingMethod::X => Op::MemoryAddress(
+                SegmentRegister::DS,
+                Some(Register::decode(0b110, self.addr_sz)), // eSI
+                None,
+                1,
+                None,
+                first 
+                ),
             // Memory addressed by ES:DI (MOVS, CMPS, INS, STOS)
-            AddressingMethod::Y => /* for now */ unimplemented!()
+            AddressingMethod::Y => Op::MemoryAddress(
+                SegmentRegister::ES,
+                Some(Register::decode(0b111, self.addr_sz)), // eDI
+                None,
+                1,
+                None,
+                first 
+                )
         }
     }
 

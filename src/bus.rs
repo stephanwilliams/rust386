@@ -165,7 +165,7 @@ impl BusState {
 
     pub fn assert_address_and_data(&mut self, addr: u32, data: u32, size: usize) {
         let off = (addr & 0x3) as usize;
-        assert!(addr + (size as u32) <= 4, "assert invalid bus address for data size");
+        assert!((addr % 4) + (size as u32) <= 4, "assert invalid bus address for data size");
         self.assert_address(addr, size);
         self.assert_data(data, size, off);
     }

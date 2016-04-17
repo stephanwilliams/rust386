@@ -110,6 +110,7 @@ impl RegEnum for Register {
     }
 
     fn decode(encoding: u8, size: Size) -> Register {
+        trace!("DECODE REGISTER FROM {:8b}", encoding);
         match size {
             Size::Size8 => {
                 match encoding {
@@ -180,15 +181,13 @@ impl<T> RegisterFile<T> where T: RegEnum {
             0b11 => val,
             _ => panic!("invalid register")
         };
-        debug!("read reg {:03b} as {:08x}", ind, a);
+        // trace!("read reg {:03b} as {:08x}", ind, a);
         Num(a, reg.size().unsigned())
     }
 
     pub fn write(&mut self, reg: T, val: u32) {
         let enc = reg.to_u32().unwrap();
         let ind = (enc >> 2) as usize;
-
-        debug!("write ind {:03b} as {:08x}", ind, val);
 
         assert!(match enc & 0x3 {
             0b00 => val & 0xFFFFFF00,
@@ -204,6 +203,6 @@ impl<T> RegisterFile<T> where T: RegEnum {
             0b11 => val,
             _ => panic!("invalid register")
         };
-        debug!("write reg {:03b} as {:08x}", ind, self.regs[ind]);
+        trace!("write reg {:03b} as {:08x}", ind, self.regs[ind]);
     }
 }
