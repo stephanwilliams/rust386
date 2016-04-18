@@ -85,6 +85,9 @@ impl IoDevice for Disk {
                                         << (8 * i);
                             }
                             self.counter += 4;
+                            if self.counter == self.count {
+                                self.state = DiskState::Idle;
+                            }
                             val
                         } else {
                             panic!("read too many bytes from disk");

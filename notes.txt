@@ -50,6 +50,30 @@ Optional:
 04h
 05h 
 
+VGA
+
+* 8b r/w, 16b w
+* 0xA0000-0xBFFFF
+* Ports
+  * 0x3C0 index or data byte
+    * 0x3DA read -> index
+    * read: index to 0x3C0, read from 0x3C1 (then read 0x3DA, data/index state not defined)
+  * 0x3C2
+    * misc output register - 0x3C2 for write, 0x3CC for read
+    * if bit 0 cleared:
+      * map 0x3D4 to 0x3B4
+      * map 0x3DA to 0x3BA
+  * 0x3C4, 0x3CE, 0x3D4
+    * most used index registers
+    * index byte write to port, read/write data from port+1 (can be 16bit access)
+  * 0x3C6
+    * DAC Mask Register
+  * 0x3C7, 0x3C8, 0x3C9
+    * control DAC
+
+CGA
+* 0x3d0 - 0x3df
+
 80386
 * CPU
   * Execution Unit

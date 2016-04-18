@@ -16,6 +16,7 @@ use instr::{
     Operands, Op
 };
 use num::{ Num, Size, Type };
+use cga::{ CGA };
 
 type VAddr  = u32;
 type SAddr  = (u16, u16);
@@ -155,6 +156,7 @@ pub struct Intel80386 {
     instr_state: InstructionState,
     cache: Cache,
     roms: Vec<(Range<u64>, Rom)>,
+    cga: Option<CGA>,
 
     eip: u32,
     has_ljmped: bool,
@@ -191,6 +193,7 @@ impl Intel80386 {
             instr_state: InstructionState::Fetch0,
             cache: Cache::new(),
             roms: vec![],
+            cga: None,
 
             eip: 0,
             has_ljmped: false,
@@ -233,6 +236,18 @@ impl Intel80386 {
         assert!(range.end <= 0x100000000, "rom range too large");
         assert!(rom.size() == (range.end - range.start) as usize, "rom range wrong size");
         self.roms.push((range, rom));
+    }
+
+    pub fn set_cga(&mut self, cga: CGA) {
+        self.cga = Some(cga);
+    }
+
+    pub fn get_cga(&self) -> Option<&CGA> {
+        if let Some(ref cga) = self.cga {
+            return Some(&cga);
+        }
+
+        None
     }
 
     fn instr_cycle(&mut self, state: &BusState) {
@@ -989,6 +1004,13 @@ impl Intel80386 {
             }
         }
 
+        if let Some(ref cga) = self.cga {
+            if 0xB8000 <= paddr && paddr < 0xC0000 {
+                // video ram
+                return Some(cga.read_u32(paddr));
+            }
+        }
+
         // check cache
         let cached = self.cache.read(paddr);
         if cached.is_some() {
@@ -1040,6 +1062,14 @@ impl Intel80386 {
         for &(ref range, ref rom) in self.roms.iter() {
             if range.start <= (paddr as u64) && (paddr as u64) < range.end {
                 panic!("tried to write to rom");
+            }
+        }
+
+        if let Some(ref mut cga) = self.cga {
+            if 0xB8000 <= paddr && paddr < 0xC0000 {
+                // video ram
+                cga.write_u32(paddr, val);
+                return Some(());
             }
         }
 

@@ -23,6 +23,8 @@ extern crate bitflags;
 
 extern crate byteorder;
 
+extern crate piston_window;
+
 #[macro_use]
 mod opcodes;
 
@@ -38,6 +40,8 @@ mod iter;
 mod iobus;
 mod disk;
 mod num;
+mod cga;
+mod display;
 
 use bus::{ Bus, BusState };
 use clock::{ HalfTimeClock, StandardClock, Clock, Clocked };
@@ -47,6 +51,8 @@ use rom::{ Rom };
 use iter::{ DWords };
 use iobus::{ IoBus };
 use disk::{ Disk };
+use cga::{ CGA, CGAController };
+use display::{ Display };
 
 use std::fs::{ File };
 use std::io::{ Read };
@@ -75,8 +81,12 @@ fn main() {
     let mut kernel: Vec<u8> = vec![];
     kernel_img.read_to_end(&mut kernel).unwrap();
     let disk = Disk::new(kernel);
+
+    let cgactl = CGAController::new();
+
     let mut iobus = IoBus::new();
     iobus.map_io(disk, 0x1F0..0x1F8);
+    iobus.map_io(cgactl, 0x3D0..0x3E0);
 
     let memctl = MemoryController::new(4 * 1024 * 1024 * 1024);
 
@@ -87,6 +97,12 @@ fn main() {
 
     let mut clock: StandardClock<()> = StandardClock::new();
     clock.add_clocked(bus);
+
+    let mut disp = Display::new();
+
+    let mut cga = CGA::new();
+
+    loop { if !disp.update(&cga).is_some() { return; } }
 
     loop {
         clock.rising_edge(());
