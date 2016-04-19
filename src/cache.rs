@@ -36,4 +36,9 @@ impl Cache {
         self.tags[ind] = Some(tag);
         self.cache[ind] = data;
     }
+
+    pub fn flush(&mut self) {
+        self.tags = [None; 8096];
+        self.cache = [0; 8096];
+    }
 }

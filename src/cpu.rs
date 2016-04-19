@@ -125,6 +125,7 @@ enum InstructionState {
     LMSW,
 
     CALL_FF2,
+    JMP_FF4,
 
     MOV_0F2x,
     MOVZX_0FBx,
@@ -151,7 +152,7 @@ macro_rules! fetch_next_instr_byte {
         if dist < 0 || dist >= 4 {
             $slf.instr_buf_addr = $slf.instr_eip & !0x3;
             let addr_copy = $slf.instr_buf_addr;
-            if let Some(new_buf) = $slf.mmu_read_mem_u32_aligned(addr_copy) {
+            if let Some(new_buf) = $slf.mmu_read_mem_sz(addr_copy, Size::Size32) {
                 $slf.instr_buf = new_buf;
                 dist = ($slf.instr_eip - $slf.instr_buf_addr) as i32;
                 trace!("new instr buf: {:08x}", new_buf);
@@ -442,6 +443,10 @@ impl Intel80386 {
 
         // SIB Byte
         instr_state![self, Fetch7 -> Fetch8, {
+            if self.current_instr.has_sib() {
+                self.current_instr.sib = Some(self.instr_byte);
+            }
+
             self.current_instr.resolve();
             trace!("disp: {:08}({:?}) imm: {:08x}({:?})",
                 self.current_instr.disp,
@@ -643,7 +648,7 @@ impl Intel80386 {
         // -> DEC  if self.current_instr.modrm_regop().unwrap() == 0b001,
         -> CALL_FF2 if self.current_instr.modrm_regop().unwrap() == 0b010,
         // -> CALL if self.current_instr.modrm_regop().unwrap() == 0b011,
-        // -> JMP  if self.current_instr.modrm_regop().unwrap() == 0b100,
+        -> JMP_FF4  if self.current_instr.modrm_regop().unwrap() == 0b100,
         // -> JMP  if self.current_instr.modrm_regop().unwrap() == 0b101,
         -> PUSH if self.current_instr.modrm_regop().unwrap() == 0b110
         ];
@@ -811,7 +816,7 @@ impl Intel80386 {
             unimplemented!();
         }];
 
-        instr_state![self, SHL -> Post, {
+        instr_state![self, SHL -> GEN_OP_Write, {
             let mut rm = self.op1val.unwrap().to_unsigned();
             let mut count =
                 self.op2val.unwrap().to_unsigned().to_u32().unwrap() & 0x1F;
@@ -873,7 +878,7 @@ impl Intel80386 {
                 _ => panic!("unrecognized push operand")
             };
 
-            let res = self.pop_sz(reg.size());
+            let res = self.pop();
             if !res.is_some() { return; }
             self.gen_regs.write(reg, res.unwrap().to_u32().unwrap());
         }];
@@ -1076,6 +1081,24 @@ impl Intel80386 {
             self.eip = addr.to_u32().unwrap();
         }];
 
+        instr_state![self, JMP_FF4 -> Post, {
+            let addr = match self.current_instr.operands {
+                Operands::Single(uop) =>
+                    match self.read_op(uop) {
+                        Some(op) => op,
+                        None => return
+                    },
+                _ => panic!("unexpected jmp ff4 operands")
+            };
+
+            let a = addr.to_u32().unwrap();
+            self.eip = match self.current_instr.op_sz {
+                Size::Size16 => a & 0x0000FFFF,
+                Size::Size32 => a,
+                _ => panic!("unexpected op sz for jmp ff4")
+            };
+        }];
+
         instr_state![self, JMP_EA -> Post, {
             match self.mode() {
                 ProcessorMode::Real => {
@@ -1256,7 +1279,7 @@ impl Intel80386 {
 
     fn mode(&self) -> ProcessorMode {
         let cr0 = self.con_regs.read(ControlRegister::CR0).to_u32().unwrap();
-        trace!("cr0: {:08x}", cr0);
+        trace!("cr0: {:032b}", cr0);
         let cr0f = CR0::from_bits(cr0).unwrap();
         if cr0f.contains(::reg::CR0_PE) {
             ProcessorMode::Protected
@@ -1301,7 +1324,10 @@ impl Intel80386 {
             Op::RelativeAddress(sz) =>
                 Some(Num(self.current_instr.imm, sz.signed())),
             Op::Constant(con) => Some(Num(con, Type::u32)),
-            Op::Offset(sz) => Some(Num(self.current_instr.disp, sz.unsigned())),
+            Op::Offset(sz) => {
+                let addr = self.current_instr.disp;
+                self.mmu_read_mem_sz(addr, sz).map_or(None, |val| Some(Num(val, sz.unsigned())))
+            },
             _ => panic!("unhandled read op")
         }
     }
@@ -1416,10 +1442,6 @@ impl Intel80386 {
 
     fn pop(&mut self) -> Option<Num> {
         let size = self.current_instr.op_sz;
-        self.pop_sz(size)
-    }
-
-    fn pop_sz(&mut self, size: Size) -> Option<Num> {
         let sp = Register::decode(0b100, self.current_instr.addr_sz);
         let spv = self.gen_regs.read(sp);
         let stack = (self.seg_addr(SegmentRegister::SS) + spv).to_u32().unwrap();
@@ -1434,18 +1456,52 @@ impl Intel80386 {
         let sp = Register::decode(0b100, self.current_instr.addr_sz);
         let spv = self.gen_regs.read(sp);
         let stack = (self.seg_addr(SegmentRegister::SS) + spv).to_u32().unwrap();
-        let sz = num.size().to_u32().unwrap();
+        
+        let op_sz = self.current_instr.op_sz;
+        let ext_num = num._as(op_sz.unsigned());
 
-        let res = self.mmu_write_mem(stack - sz, num);
+        let res = self.mmu_write_mem(stack - (op_sz as u32), ext_num);
         if !res.is_some() { return None; }
-        self.gen_regs.write(sp, (spv - sz).to_u32().unwrap());
+        self.gen_regs.write(sp, (spv - (op_sz as u32)).to_u32().unwrap());
         res
     }
 
     // MMU functions
+    
+    fn translate_addr(&mut self, vaddr: VAddr) -> Option<PAddr> {
+        let cr0 = self.con_regs.read(ControlRegister::CR0).to_u32().unwrap();
+        let cr0f = CR0::from_bits(cr0).unwrap();
+        if cr0f.contains(::reg::CR0_PE | ::reg::CR0_PG) {
+            let cr3 = self.con_regs.read(ControlRegister::CR3).to_u32().unwrap();
+            let pdbr = cr3 & 0xFFFFF000;
+            let pdx = (vaddr & 0xFFC00000) >> 22;
+            let ptx = (vaddr & 0x003FF000) >> 12;
+            let off = vaddr & 0x00000FFF;
+            trace!("{:08x} {:08x} {:08x}|{:08x} {:08x} {:08x}", cr3, pdbr, vaddr, pdx, ptx, off);
+
+            let maybe_pde = self.mmu_read_mem_u32_aligned(pdbr + (pdx * 4));
+            if !maybe_pde.is_some() { return None; }
+
+            let pde = maybe_pde.unwrap();
+            trace!("pde {:08x}", pde);
+            let pt = pde & 0xFFFFF000;
+            let maybe_pte = self.mmu_read_mem_u32_aligned(pt + (ptx * 4));
+            if !maybe_pte.is_some() { return None; }
+
+            let pte = maybe_pte.unwrap();
+            trace!("pte {:08x}", pte);
+            let page = pte & 0xFFFFF000;
+            trace!("VA {:08x} to PA {:08x}", vaddr, page | off);
+            Some(page | off)
+        } else {
+            Some(vaddr)
+        }
+    }
 
     fn mmu_read_mem_sz(&mut self, vaddr: VAddr, size: Size) -> Option<u32> {
-        let paddr = vaddr as PAddr;
+        let maybe_paddr = self.translate_addr(vaddr);
+        if !maybe_paddr.is_some() { return None; }
+        let paddr = maybe_paddr.unwrap();
         match size {
             Size::Size8 =>  self.mmu_read_mem::<u8 >(paddr).map(|x| x as u32),
             Size::Size16 => self.mmu_read_mem::<u16>(paddr).map(|x| x as u32),
@@ -1454,8 +1510,11 @@ impl Intel80386 {
         }
     }
 
-    fn mmu_read_mem<T>(&mut self, paddr: PAddr) -> Option<T> where T: FromPrimitive {
+    fn mmu_read_mem<T>(&mut self, vaddr: VAddr) -> Option<T> where T: FromPrimitive {
         assert!(self.bus_transfer_state == BusTransferState::Idle);
+        let maybe_paddr = self.translate_addr(vaddr);
+        if !maybe_paddr.is_some() { return None; }
+        let paddr = maybe_paddr.unwrap();
 
         let count = mem::size_of::<T>() as u32;
         assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");
@@ -1530,8 +1589,11 @@ impl Intel80386 {
         None
     }
 
-    fn mmu_write_mem(&mut self, paddr: PAddr, num: Num) -> Option<()> {
+    fn mmu_write_mem(&mut self, vaddr: VAddr, num: Num) -> Option<()> {
         assert!(self.bus_transfer_state == BusTransferState::Idle);
+        let maybe_paddr = self.translate_addr(vaddr);
+        if !maybe_paddr.is_some() { return None; }
+        let paddr = maybe_paddr.unwrap();
 
         let count = num.size().to_u32().unwrap();
         assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");

@@ -39,6 +39,7 @@ impl Clocked<BusState, BusState> for MemoryController {
                 match state.read(BusLine::W_R) {
                     Signal::High => {
                         let data = state.read_data();
+                        trace!("MEMWR {:08x} {:08x}", data, addr);
                         unsafe { *self.memory.offset(addr4) = data };
                     },
                     Signal::Low => {

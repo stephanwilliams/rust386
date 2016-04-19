@@ -372,12 +372,12 @@ impl Instruction {
                 },
             // Reg field of ModR/M byte selects a control register
             AddressingMethod::C => match self.modrm_mod().unwrap() {
-                0b11 => Op::ControlRegister(ControlRegister::decode(self.modrm_rm().unwrap(), first)),
+                0b11 => Op::ControlRegister(ControlRegister::decode(self.modrm_regop().unwrap(), first)),
                 _ => panic!("invalid modrm mod")
             },
             // Reg field of ModR/M byte selects a debug register
             AddressingMethod::D => match self.modrm_mod().unwrap() {
-                0b11 => Op::DebugRegister(DebugRegister::decode(self.modrm_rm().unwrap(), first)),
+                0b11 => Op::DebugRegister(DebugRegister::decode(self.modrm_regop().unwrap(), first)),
                 _ => panic!("invalid modrm mod")
             },
             // ModR/M specifies operand; gen reg or mem addr. If mem addr,
@@ -423,7 +423,7 @@ impl Instruction {
             AddressingMethod::S => Op::SegmentRegister(
                 SegmentRegister::decode(self.modrm_regop().unwrap(), first)),
             // Reg field of ModR/M selects test register
-            AddressingMethod::T => match self.modrm_mod().unwrap() {
+            AddressingMethod::T => match self.modrm_regop().unwrap() {
                 0b11 => Op::TestRegister(TestRegister::decode(self.modrm_rm().unwrap(), first)),
                 _ => panic!("invalid modrm mod")
             },
@@ -561,7 +561,7 @@ impl Instruction {
 
         let ss = self.sib_ss();
 
-        let addr_form = (match self.op_sz {
+        let mut addr_form = (match self.addr_sz {
             Size::Size16 => [[
                 addr_form!(size, seg, DS, [BX + SI]),
                 addr_form!(size, seg, DS, [BX + DI]),
@@ -623,6 +623,19 @@ impl Instruction {
 
         // trace!("modrm mod {:02b} rm {:03b} op {:?}", modrm_mod, modrm_rm, addr_form);
         // trace!("modrm {:0x} {:08b}", self.modrm.unwrap(), self.modrm.unwrap());
+        
+        // sib
+        if self.op_sz == Size::Size32 && modrm_rm == 0b100 {
+            if let Op::MemoryAddress(seg, _, _, _, disp, size) = addr_form {
+                let scale = self.sib_ss().unwrap();
+                let index = self.sib_index_to_reg();
+                let base = match Register::decode(self.sib_base().unwrap(), Size::Size32) {
+                    reg @ Register::EBP => if modrm_mod == 0b00 { None } else { Some(reg) },
+                    reg @ _ => Some(reg)
+                };
+                addr_form = Op::MemoryAddress(seg, base, index, scale, disp, size);
+            }
+        }
 
         if let Op::MemoryAddress(_, _, _, _, Some(disp), _) = addr_form {
             self.set_disp_sz_once(disp);
