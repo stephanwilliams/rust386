@@ -204,6 +204,7 @@ impl BusState {
     pub fn assert_data(&mut self, data: u32, size: usize, off: usize) {
         assert!(size == 1 || size == 2 || size == 3 || size == 4, "assert invalid data size on bus");
         assert!(off + size <= 4, "assert invalid offset on bus");
+        trace!("bus assert data {:08x} size {:08x} off {}", data, size, off);
 
         // let be_off = BusLine::BE0 as usize;
         let d_off = BusLine::D0 as usize;

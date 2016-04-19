@@ -10,7 +10,10 @@ use rom::{ Rom };
 use opcodes::{
     UnresolvedOperands, SINGLE_OPCODE_MAP, DOUBLE_OPCODE_MAP
 };
-use reg::{ SegmentRegister, Register, RegisterFile, EFlags, RegEnum };
+use reg::{
+    SegmentRegister, Register, RegisterFile, EFlags, RegEnum,
+    ControlRegister, TestRegister, DebugRegister, CR0
+};
 use instr::{
     InstructionPrefix, SegmentOverridePrefix, Instruction,
     Operands, Op
@@ -23,14 +26,20 @@ type SAddr  = (u16, u16);
 type PAddr  = u32;
 type IOAddr = u16;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum BusTransferState {
     Idle,
     T1,
     T2
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
+enum ProcessorMode {
+    Real,
+    Protected
+}
+
+#[derive(PartialEq, Eq, Debug, Copy, Clone)]
 enum InstructionState {
     Fetch0,
     Fetch1,
@@ -55,6 +64,12 @@ enum InstructionState {
     GEN_OP_Write,
 
     GRP1,
+    GRP2,
+    GRP3,
+    GRP4,
+    GRP5,
+    GRP6,
+    GRP7,
 
     ADD_0,
     ADC_1,
@@ -65,16 +80,35 @@ enum InstructionState {
     SUB_2,
     CMP_3,
 
+    INC,
+    DEC,
+
+    ROL,
+    ROR,
+    RCL,
+    RCR,
+    SHL,
+    SHR,
+    SAR,
+
+    PUSH,
+    POP,
+
     INS_6x,
-
     Jcc_7x,
+    MOV,
+    LEA,
 
-    MOV_Bx,
+    TEST_Ax,
+
+    RET_C3,
 
     IN_0,
     OUT_0,
 
+    CALL_E8,
     JMP_EA,
+    JMP_EB,
 
     CLC_F8,
     STC_F9,
@@ -83,6 +117,16 @@ enum InstructionState {
     CLD_FC,
     STD_FD,
 
+    SGDT,
+    SIDT,
+    LGDT,
+    LIDT,
+    SMSW,
+    LMSW,
+
+    CALL_FF2,
+
+    MOV_0F2x,
     MOVZX_0FBx,
 
     HALT,
@@ -130,6 +174,7 @@ macro_rules! instr_state {
         if $slf.instr_state == InstructionState::$cur {
             trace!("process state {:?}", InstructionState::$cur);
             if $slf.instr_did_consume_byte {
+                $slf.instr_len += 1;
                 fetch_next_instr_byte![$slf];
                 trace!("instr byte: {:02x}", $slf.instr_byte);
             }
@@ -162,9 +207,13 @@ pub struct Intel80386 {
     has_ljmped: bool,
     gen_regs: RegisterFile<Register>,
     seg_regs: RegisterFile<SegmentRegister>,
+    con_regs: RegisterFile<ControlRegister>,
+    dbg_regs: RegisterFile<DebugRegister>,
+    tst_regs: RegisterFile<TestRegister>,
     eflags: EFlags,
 
     instr_eip: u32,
+    instr_len: u32,
     instr_byte: u8,
     instr_buf: u32,
     instr_buf_addr: u32,
@@ -199,9 +248,13 @@ impl Intel80386 {
             has_ljmped: false,
             gen_regs: RegisterFile::new(8),
             seg_regs: RegisterFile::new(6),
+            con_regs: RegisterFile::new(4),
+            dbg_regs: RegisterFile::new(8),
+            tst_regs: RegisterFile::new(8),
             eflags: ::reg::EFLAGS_RESERVED1,
 
             instr_eip: 0,
+            instr_len: 0,
             instr_byte: 0,
             instr_buf: 0,
             instr_buf_addr: 0,
@@ -255,6 +308,7 @@ impl Intel80386 {
         if self.instr_state == InstructionState::Fetch0 {
             self.print_state();
             self.instr_eip = self.eip().to_u32().unwrap();
+            self.instr_len = 0;
             self.instr_did_consume_byte = true;
             self.current_instr = Instruction::new();
             self.op1val = None;
@@ -469,28 +523,48 @@ impl Intel80386 {
 
         instr_state![self, Decode -> Dispatch, {
             debug!("{:?}", self.current_instr);
-            self.eip = self.instr_eip - 1;
-            // unimplemented!();
+            self.eip += self.instr_len - 1;
         }];
 
-        instr_state![self, Dispatch -> Dispatch, {
+        instr_state![self, Dispatch -> HALT, {
 
         },
-        -> GEN_OP_Read if self.current_instr.opcode & 0xFFC2 == 0x0000,
+        -> GEN_OP_Read if self.current_instr.opcode & 0xFFC7 <= 0x0005,
+        -> INC         if self.current_instr.opcode & 0xFFF8 == 0x0040,
+        -> DEC         if self.current_instr.opcode & 0xFFF8 == 0x0048,
+        -> PUSH        if self.current_instr.opcode & 0xFFF8 == 0x0050,
+        -> PUSH        if self.current_instr.opcode          == 0x0068,
+        -> PUSH        if self.current_instr.opcode          == 0x006A,
+        -> POP         if self.current_instr.opcode & 0xFFF8 == 0x0058,
         -> INS_6x      if self.current_instr.opcode & 0xFFFE == 0x006C,
-        -> MOV_Bx      if self.current_instr.opcode & 0xFFF0 == 0x00B0,
+        -> MOV         if self.current_instr.opcode & 0xFFFC == 0x0088,
+        -> MOV         if self.current_instr.opcode & 0xFFFD == 0x008C,
+        -> MOV         if self.current_instr.opcode & 0xFFF0 == 0x00B0,
+        -> MOV         if self.current_instr.opcode & 0xFFFE == 0x00C6,
+        -> MOV         if self.current_instr.opcode & 0xFFFC == 0x00A0,
+        -> TEST_Ax     if self.current_instr.opcode & 0xFFFE == 0x00A8,
+        -> CALL_E8     if self.current_instr.opcode          == 0x00E8,
         -> JMP_EA      if self.current_instr.opcode          == 0x00EA,
+        -> JMP_EB      if self.current_instr.opcode          == 0x00EB,
         -> IN_0        if self.current_instr.opcode & 0xFFF6 == 0x00E4,
         -> OUT_0       if self.current_instr.opcode & 0xFFF6 == 0x00E6,
-        -> MOVZX_0FBx  if self.current_instr.opcode & 0x0FBE == 0x0FB6,
+        -> MOVZX_0FBx  if self.current_instr.opcode & 0xFFBE == 0x0FB6,
+        -> MOV_0F2x    if self.current_instr.opcode & 0xFFF0 == 0x0F20,
         -> GRP1        if self.current_instr.opcode & 0xFFFC == 0x0080,
+        -> GRP2        if self.current_instr.opcode & 0xFFFE == 0x00C0,
+        -> GRP2        if self.current_instr.opcode & 0xFFFC == 0x00D0,
         -> Jcc_7x      if self.current_instr.opcode & 0xFFF0 == 0x0070,
+        -> LEA         if self.current_instr.opcode          == 0x008D,
+        -> RET_C3      if self.current_instr.opcode          == 0x00C3,
         -> CLC_F8      if self.current_instr.opcode          == 0x00F8,
         -> STC_F9      if self.current_instr.opcode          == 0x00F9,
         -> CLI_FA      if self.current_instr.opcode          == 0x00FA,
         -> STI_FB      if self.current_instr.opcode          == 0x00FB,
         -> CLD_FC      if self.current_instr.opcode          == 0x00FC,
-        -> STD_FD      if self.current_instr.opcode          == 0x00FD
+        -> STD_FD      if self.current_instr.opcode          == 0x00FD,
+        -> GRP5        if self.current_instr.opcode          == 0x00FF,
+        -> GRP6        if self.current_instr.opcode          == 0x0F00,
+        -> GRP7        if self.current_instr.opcode          == 0x0F01
         ];
 
         instr_state![self, GRP1 -> HALT, {
@@ -521,6 +595,60 @@ impl Intel80386 {
         -> XOR_3 if self.current_instr.modrm_regop().unwrap() == 0b110,
         -> CMP_3 if self.current_instr.modrm_regop().unwrap() == 0b111
         ];
+
+        instr_state![self, GRP7 -> HALT, {
+            // SGDT
+            // SIDT
+            // LGDT
+            // LIDT
+            // SMSW
+            // LMSW
+        },
+        -> SGDT if self.current_instr.modrm_regop().unwrap() == 0b000,
+        -> SIDT if self.current_instr.modrm_regop().unwrap() == 0b001,
+        -> LGDT if self.current_instr.modrm_regop().unwrap() == 0b010,
+        -> LIDT if self.current_instr.modrm_regop().unwrap() == 0b011,
+        -> SMSW if self.current_instr.modrm_regop().unwrap() == 0b100,
+        -> LMSW if self.current_instr.modrm_regop().unwrap() == 0b110
+        ];
+
+        instr_state![self, SGDT -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, SIDT -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, LGDT -> Post, {
+            // NOP
+        }];
+
+        instr_state![self, LIDT -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, SMSW -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, LMSW -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, GRP5 -> HALT, {
+
+        },
+        // -> INC  if self.current_instr.modrm_regop().unwrap() == 0b000,
+        // -> DEC  if self.current_instr.modrm_regop().unwrap() == 0b001,
+        -> CALL_FF2 if self.current_instr.modrm_regop().unwrap() == 0b010,
+        // -> CALL if self.current_instr.modrm_regop().unwrap() == 0b011,
+        // -> JMP  if self.current_instr.modrm_regop().unwrap() == 0b100,
+        // -> JMP  if self.current_instr.modrm_regop().unwrap() == 0b101,
+        -> PUSH if self.current_instr.modrm_regop().unwrap() == 0b110
+        ];
+
+        // 00|010|101
 
         instr_state![self, GEN_OP_Read -> HALT, {
             match self.current_instr.operands {
@@ -558,7 +686,7 @@ impl Intel80386 {
             let of = op1.is_sign_bit_set() == op2.is_sign_bit_set()
                 && op2.is_sign_bit_set() != res.is_sign_bit_set();
             self.result = Some(res);
-            self.update_flags(res, cf, false, of);
+            self.update_flags(res, Some(cf), Some(false), Some(of));
         }];
 
         instr_state![self, ADC_1 -> GEN_OP_Write, {
@@ -570,7 +698,7 @@ impl Intel80386 {
             let op2 = self.op2val.unwrap()._as(op1.1);
             let res = op1 & op2;
             self.result = Some(res);
-            self.update_flags(res, false, false, false);
+            self.update_flags(res, Some(false), None, Some(false));
         }];
 
         instr_state![self, XOR_3 -> GEN_OP_Write, {
@@ -578,7 +706,7 @@ impl Intel80386 {
             let op2 = self.op2val.unwrap()._as(op1.1);
             let res = op1 ^ op2;
             self.result = Some(res);
-            self.update_flags(res, false, false, false);
+            self.update_flags(res, Some(false), None, Some(false));
         }];
 
         instr_state![self, OR_0 -> GEN_OP_Write, {
@@ -586,7 +714,7 @@ impl Intel80386 {
             let op2 = self.op2val.unwrap()._as(op1.1);
             let res = op1 | op2;
             self.result = Some(res);
-            self.update_flags(res, false, false, false);
+            self.update_flags(res, Some(false), None, Some(false));
         }];
 
         instr_state![self, SBB_1 -> GEN_OP_Write, {
@@ -594,16 +722,123 @@ impl Intel80386 {
         }];
 
         instr_state![self, SUB_2 -> GEN_OP_Write, {
-            unimplemented!();
-        }];
-
-        instr_state![self, CMP_3 -> Post, {
             let op1 = self.op1val.unwrap().to_unsigned();
             let op2 = self.op2val.unwrap().to_signed()._as(op1.1).to_unsigned();
             let (val, cf) = op1.overflowing_sub(op2);
             let of = op1.is_sign_bit_set() != op2.is_sign_bit_set()
                 && op2.is_sign_bit_set() == val.is_sign_bit_set();
-            self.update_flags(val, cf, false, of);
+            self.result = Some(val);
+            self.update_flags(val, Some(cf), Some(false), Some(of));
+        }];
+
+        instr_state![self, CMP_3 -> Post, {
+            let op1 = self.op1val.unwrap().to_unsigned();
+            let op2 = self.op2val.unwrap().to_signed()._as(op1.1).to_unsigned();
+            trace!("COMPARE {:?} and {:?}", op1, op2);
+            let (val, cf) = op1.overflowing_sub(op2);
+            let of = op1.is_sign_bit_set() != op2.is_sign_bit_set()
+                && op2.is_sign_bit_set() == val.is_sign_bit_set();
+            trace!("sign bits op1 {} op2 {} val {} val {:?} of {} cf {}",
+                   op1.is_sign_bit_set(), op2.is_sign_bit_set(), val.is_sign_bit_set(),
+                   val, of, cf);
+            self.update_flags(val, Some(cf), Some(false), Some(of));
+        }];
+
+        instr_state![self, INC -> Post, {
+            let reg = match self.current_instr.operands {
+                Operands::Single(Op::Register(reg)) => reg,
+                _ => panic!("unexpected operands for inc")
+            };
+
+            let val = self.gen_regs.read(reg);
+            let (res, cf) = val.overflowing_add(Num(1, val.1));
+            self.gen_regs.write(reg, res.to_u32().unwrap());
+            self.update_flags(val, Some(cf), Some(false), None);
+        }];
+
+        instr_state![self, DEC -> Post, {
+            let reg = match self.current_instr.operands {
+                Operands::Single(Op::Register(reg)) => reg,
+                _ => panic!("unexpected operands for inc")
+            };
+
+            let val = self.gen_regs.read(reg);
+            let (res, cf) = val.overflowing_sub(Num(1, val.1));
+            self.gen_regs.write(reg, res.to_u32().unwrap());
+            self.update_flags(val, Some(cf), Some(false), None);
+        }];
+
+        instr_state![self, GRP2 -> HALT, {
+            // ROL ROR RCL RCR SHL SHR     SAR
+            match self.current_instr.operands {
+                Operands::Double(op1, op2) => {
+                    match self.read_op(op1) {
+                        Some(op1val) => match self.read_op(op2) {
+                            Some(op2val) => {
+                                self.op1val = Some(op1val);
+                                self.op2val = Some(op2val);
+                            },
+                            None => return
+                        },
+                        None => return
+                    }
+                },
+                _ => panic!("unrecognized group 2 operand")
+            };
+        },
+        -> ROL if self.current_instr.modrm_regop().unwrap() == 0b000,
+        -> ROR if self.current_instr.modrm_regop().unwrap() == 0b001,
+        -> RCL if self.current_instr.modrm_regop().unwrap() == 0b010,
+        -> RCR if self.current_instr.modrm_regop().unwrap() == 0b011,
+        -> SHL if self.current_instr.modrm_regop().unwrap() == 0b100,
+        -> SHR if self.current_instr.modrm_regop().unwrap() == 0b101,
+        -> SAR if self.current_instr.modrm_regop().unwrap() == 0b111
+        ];
+
+        instr_state![self, ROL -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, ROR -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, RCL -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, RCR -> Post, {
+            unimplemented!();
+        }];
+
+        instr_state![self, SHL -> Post, {
+            let mut rm = self.op1val.unwrap().to_unsigned();
+            let mut count =
+                self.op2val.unwrap().to_unsigned().to_u32().unwrap() & 0x1F;
+            while count > 0 {
+                self.update_flag(::reg::EFLAGS_CF, rm.is_sign_bit_set());
+                rm = rm << 1;
+                count -= 1;
+            }
+            
+            self.result = Some(rm);
+        }];
+
+        instr_state![self, SHR -> GEN_OP_Write, {
+            let mut rm = self.op1val.unwrap().to_unsigned();
+            let mut count =
+                self.op2val.unwrap().to_unsigned().to_u32().unwrap() & 0x1F;
+            while count > 0 {
+                self.update_flag(::reg::EFLAGS_CF, rm.is_low_bit_set());
+                rm = rm >> 1;
+                count -= 1;
+            }
+            
+            self.result = Some(rm);
+        }];
+
+        instr_state![self, SAR -> Post, {
+            unimplemented!();
         }];
 
         instr_state![self, GEN_OP_Write -> Post, {
@@ -617,6 +852,30 @@ impl Intel80386 {
                 },
                 _ => panic!("unrecognized gen op operand")
             }
+        }];
+
+        instr_state![self, PUSH -> Post, {
+            let op = match self.current_instr.operands {
+                Operands::Single(uop) => match self.read_op(uop) {
+                    Some(op) => op,
+                    None => return
+                },
+                _ => panic!("unrecognized push operand")
+            };
+
+            let res = self.push(op);
+            if !res.is_some() { return; }
+        }];
+
+        instr_state![self, POP -> Post, {
+            let reg = match self.current_instr.operands {
+                Operands::Single(Op::Register(reg)) => reg,
+                _ => panic!("unrecognized push operand")
+            };
+
+            let res = self.pop_sz(reg.size());
+            if !res.is_some() { return; }
+            self.gen_regs.write(reg, res.unwrap().to_u32().unwrap());
         }];
 
         instr_state![self, Jcc_7x -> Post, {
@@ -652,14 +911,69 @@ impl Intel80386 {
             }
         }];
 
-        instr_state![self, MOV_Bx -> Post, {
-            trace!("{:?}", self.current_instr.operands);
+        instr_state![self, LEA -> Post, {
+            let (reg, addr) = match self.current_instr.operands {
+                Operands::Double(Op::Register(reg),
+                    Op::MemoryAddress(_, base, index, scale, disp, sz)) => {
+                    (reg, self.calc_address(base, index, scale, disp))
+                },
+                _ => panic!("unexpected lea operands")
+            };
+
+            match reg.size() {
+                Size::Size16 => {
+                    match addr.size() {
+                        Size::Size16 => {
+                            self.gen_regs.write(reg, addr.to_u16().unwrap() as u32);
+                        },
+                        Size::Size32 => {
+                            self.gen_regs.write(reg, addr.to_u32().unwrap() & 0x0000FFFF);
+                        },
+                        _ => panic!("unexpectedd address size for lea")
+                    };
+                },
+                Size::Size32 => {
+                    match addr.size() {
+                        Size::Size16 => {
+                            self.gen_regs.write(reg, addr.to_u32().unwrap() & 0x0000FFFF);
+                        },
+                        Size::Size32 => {
+                            self.gen_regs.write(reg, addr.to_u32().unwrap());
+                        },
+                        _ => panic!("unexpected address size for lea")
+                    };
+                },
+                _ => panic!("unexpected reg size for lea")
+            }
+
+        }];
+
+        instr_state![self, TEST_Ax -> Post, {
             match self.current_instr.operands {
-                Operands::Double(Op::Register(reg), Op::Immediate(imm)) => {
-                    self.gen_regs.write(reg, self.current_instr.imm);
+                Operands::Double(uop1, uop2) => {
+                    let op1 = self.read_op(uop1);
+                    if !op1.is_some() { return; }
+                    let op2 = self.read_op(uop2);
+                    if !op2.is_some() { return; }
+
+                    trace!("{:?} {:?}", op1.unwrap().size(), op2.unwrap().size());
+                    let res = op1.unwrap().to_unsigned() & op2.unwrap().to_unsigned();
+                    self.update_flags(res, Some(false), None, Some(false));
                 },
                 _ => panic!("unexpected operand")
-            };
+            }
+        }];
+
+        instr_state![self, MOV -> Post, {
+            match self.current_instr.operands {
+                Operands::Double(op1, op2) => {
+                    let op = self.read_op(op2);
+                    if !op.is_some() { return; }
+                    let res = self.write_op(op1, op.unwrap());
+                    if !res.is_some() { return; }
+                },
+                _ => panic!("unexpected operand")
+            }
         }];
 
         instr_state![self, INS_6x -> Post, {
@@ -721,22 +1035,81 @@ impl Intel80386 {
             self.io_read_result = None;
         }];
 
+        instr_state![self, RET_C3 -> Post, {
+            let res = self.pop();
+            if !res.is_some() { return; }
+            let new_ip = match self.current_instr.addr_sz {
+                Size::Size16 => res.unwrap() & 0x0000FFFF,
+                Size::Size32 => res.unwrap(),
+                _ => panic!("invalid addr sz in ret")
+            };
+
+            self.eip = new_ip.to_u32().unwrap();
+        }];
+
+        instr_state![self, CALL_E8 -> Post, {
+            let off = Num(self.current_instr.disp,
+                          Size::from_u32(self.current_instr.disp_sz).unwrap().unsigned());
+            let num = Num(self.eip, self.current_instr.addr_sz.unsigned());
+            let res = self.push(num);
+            if !res.is_some() { return; }
+
+            let new_eip = (self.eip as i32 + off.to_u32().unwrap() as i32) as u32;
+            trace!("CALL FROM EIP {:08x} TO EIP {:08x}", self.eip, new_eip);
+            self.eip = new_eip;
+        }];
+
+        instr_state![self, CALL_FF2 -> Post, {
+            let addr = match self.current_instr.operands {
+                Operands::Single(uop) =>
+                    match self.read_op(uop) {
+                        Some(addr) => addr,
+                        None => return
+                    },
+                _ => panic!("unexpected operand to call ff2")
+            };
+
+            let num = Num(self.eip, self.current_instr.addr_sz.unsigned());
+            let res = self.push(num);
+            if !res.is_some() { return; }
+
+            self.eip = addr.to_u32().unwrap();
+        }];
+
         instr_state![self, JMP_EA -> Post, {
-            if true /* real mode */ {
-                trace!("INSTR DISP: {:08x}", self.current_instr.disp);
-                self.has_ljmped = true;
-                trace!("jmp disp: {:08x} imm: {:08x}", self.current_instr.disp, self.current_instr.imm);
-                if self.current_instr.op_sz == Size::Size16 {
-                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
+            match self.mode() {
+                ProcessorMode::Real => {
+                    trace!("INSTR DISP: {:08x}", self.current_instr.disp);
+                    self.has_ljmped = true;
+                    trace!("jmp disp: {:08x} imm: {:08x}", self.current_instr.disp, self.current_instr.imm);
+                    if self.current_instr.op_sz == Size::Size16 {
+                        self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
+                        self.eip = self.current_instr.disp & 0x0000FFFF;
+                    } else {
+                        self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
+                        self.eip = self.current_instr.disp;
+                    }
+                },
+                ProcessorMode::Protected => {
+                    trace!("jmp disp: {:08x} imm: {:08x}", self.current_instr.disp, self.current_instr.imm);
+                    // ignore segments
                     self.eip = self.current_instr.disp & 0x0000FFFF;
-                } else {
-                    self.seg_regs.write(SegmentRegister::CS, self.current_instr.imm);
-                    self.eip = self.current_instr.disp;
                 }
-            } else {
-                // protected mode
-                unimplemented!();
             }
+        }];
+
+        instr_state![self, JMP_EB -> Post, {
+            let off = match self.current_instr.operands {
+                Operands::Single(uop) =>
+                    match self.read_op(uop) {
+                        Some(op) => op,
+                        None => return
+                    },
+                _ => panic!("unexpected jmp eb operands")
+            };
+
+            trace!("JMP EB OFF {:?}", off);
+            self.eip = (self.eip as i32 + off._as(Type::u32).to_u32().unwrap() as i32) as u32;
         }];
 
         instr_state![self, CLC_F8 -> Post, {
@@ -761,6 +1134,19 @@ impl Intel80386 {
 
         instr_state![self, STD_FD -> Post, {
             self.eflags.insert(::reg::EFLAGS_DF);
+        }];
+
+        instr_state![self, MOV_0F2x -> Post, {
+            match self.current_instr.operands  {
+                Operands::Double(op1, op2) =>
+                    match self.read_op(op2) {
+                        Some(val) => {
+                            self.write_op(op1, val);
+                        },
+                        None => return
+                    },
+                _ => panic!("unexpected operands for MOV")
+            }
         }];
 
         instr_state![self, MOVZX_0FBx -> Post, {
@@ -868,64 +1254,134 @@ impl Intel80386 {
 
     // Utility
 
+    fn mode(&self) -> ProcessorMode {
+        let cr0 = self.con_regs.read(ControlRegister::CR0).to_u32().unwrap();
+        trace!("cr0: {:08x}", cr0);
+        let cr0f = CR0::from_bits(cr0).unwrap();
+        if cr0f.contains(::reg::CR0_PE) {
+            ProcessorMode::Protected
+        } else {
+            ProcessorMode::Real
+        }
+    }
+
     fn default_size(&self) -> Size {
-        Size::Size16 // TODO
+        match self.mode() {
+            ProcessorMode::Real      => Size::Size16,
+            ProcessorMode::Protected => Size::Size32
+        }
     }
 
     fn eip(&self) -> Num {
         // TODO: protected mode
-        segaddr![self, CS:self.eip] | if self.has_ljmped { 0 } else { 0xFFF00000 }
+        match self.mode() {
+            ProcessorMode::Real      =>
+                self.seg_addr(SegmentRegister::CS)._as(Type::u32) + self.eip
+                    | if self.has_ljmped { 0 } else { 0xFFF00000 },
+            ProcessorMode::Protected => Num(self.eip, Type::u32)
+        }
     }
 
     fn read_op(&mut self, op: Op) -> Option<Num> {
         match op {
             Op::Register(reg) => Some(self.gen_regs.read(reg)),
+
             Op::SegmentRegister(reg) => Some(self.seg_regs.read(reg)),
+            Op::ControlRegister(reg) => Some(self.con_regs.read(reg)),
+            Op::DebugRegister(reg) => Some(self.dbg_regs.read(reg)),
+            Op::TestRegister(reg) => Some(self.tst_regs.read(reg)),
+
             Op::FlagsRegister(sz) => Some(Num(self.eflags.bits(), sz.unsigned())),
             Op::MemoryAddress(seg_reg, base, index, scale, disp_sz, size) => {
-                let addr = self.calc_address(seg_reg, base, index, scale, disp_sz);
+                let addr = self.calc_address_seg(seg_reg, base, index, scale, disp_sz);
                 self.mmu_read_mem_sz(addr.to_u32().unwrap(), size)
                     .map_or(None, |val| Some(Num(val, size.unsigned())))
             },
             Op::Immediate(sz) => Some(Num(self.current_instr.imm, sz.signed())),
+            Op::RelativeAddress(sz) =>
+                Some(Num(self.current_instr.imm, sz.signed())),
+            Op::Constant(con) => Some(Num(con, Type::u32)),
+            Op::Offset(sz) => Some(Num(self.current_instr.disp, sz.unsigned())),
             _ => panic!("unhandled read op")
         }
     }
 
     fn write_op(&mut self, op: Op, num: Num) -> Option<()> {
+        trace!("WRITE NUM {:?}", num);
         match op {
-            Op::Register(reg) => Some(self.gen_regs.write(reg, num.to_u32().unwrap())),
+            Op::Register(reg) => Some(self.gen_regs.write(reg, num.to_unsigned().to_u32().unwrap())),
+
+            Op::SegmentRegister(sreg) => Some(self.seg_regs.write(sreg, num.to_unsigned().to_u32().unwrap())),
+            Op::ControlRegister(reg) => Some(self.con_regs.write(reg, num.to_unsigned().to_u32().unwrap())),
+            Op::DebugRegister(reg) => Some(self.dbg_regs.write(reg, num.to_unsigned().to_u32().unwrap())),
+            Op::TestRegister(reg) => Some(self.tst_regs.write(reg, num.to_unsigned().to_u32().unwrap())),
+
             Op::MemoryAddress(seg_reg, base, index, scale, disp_sz, size) => {
-                let addr = self.calc_address(seg_reg, base, index, scale, disp_sz);
+                let addr = self.calc_address_seg(seg_reg, base, index, scale, disp_sz);
                 self.mmu_write_mem(addr.to_u32().unwrap(), num)
             },
             _ => panic!("unhandled write op")
         }
     }
 
-    fn calc_address(&mut self, seg_reg: SegmentRegister, base: Option<Register>,
+    fn calc_address_seg(&mut self, seg_reg: SegmentRegister, base: Option<Register>,
         index: Option<Register>, scale: u8, disp_sz: Option<Size>) -> Num {
-        let z = Num(0, self.current_instr.addr_sz.unsigned());
+        let sz = self.current_instr.addr_sz.signed();
+        let z = Num(0, sz);
+
+        let s = self.seg_addr(seg_reg)._as(sz);
+        let b =  base.map_or(z, |reg| self.gen_regs.read(reg))._as(sz);
+        let i = index.map_or(z, |reg| self.gen_regs.read(reg))._as(sz) << (scale as usize);
+        let d = disp_sz.map_or(z, |s| Num(self.current_instr.disp, s.signed()))._as(sz);
+
+        (s + b + i + d).to_unsigned()
         
-        self.seg_addr(seg_reg)._as(z.1)
-            + base.map_or(z, |reg| self.gen_regs.read(reg))
-            + index.map_or(z, |reg| self.gen_regs.read(reg) << (scale as usize))
-            + disp_sz.map_or(z,
-                |sz| Num(self.current_instr.disp, sz.signed()))
+        // (self.seg_addr(seg_reg)._as(sz)
+        //     + base.map_or(z, |reg| self.gen_regs.read(reg).to_signed())
+        //     + index.map_or(z, |reg| self.gen_regs.read(reg).to_signed() << (scale as usize))
+        //     + disp_sz.map_or(z,
+        //         |sz| Num(self.current_instr.disp, sz.signed()))).to_unsigned()
+    }
+
+    fn calc_address(&mut self, base: Option<Register>,
+        index: Option<Register>, scale: u8, disp_sz: Option<Size>) -> Num {
+        let sz = self.current_instr.addr_sz.signed();
+        let z = Num(0, sz);
+
+        let b =  base.map_or(z, |reg| self.gen_regs.read(reg))._as(sz);
+        let i = index.map_or(z, |reg| self.gen_regs.read(reg))._as(sz) << (scale as usize);
+        let d = disp_sz.map_or(z, |s| Num(self.current_instr.disp, s.signed()))._as(sz);
+
+        (b + i + d).to_unsigned()
+        
+        // (base.map_or(z, |reg| self.gen_regs.read(reg)._as(sz))
+        //     + index.map_or(z, |reg| self.gen_regs.read(reg)._as(sz) << (scale as usize))
+        //     + disp_sz.map_or(z,
+        //         |sz| Num(self.current_instr.disp, sz.signed()))._as(sz)).to_unsigned()
     }
 
     fn seg_addr(&self, seg_reg: SegmentRegister) -> Num {
-        // TODO: protected mode
-        self.seg_regs.read(seg_reg) << 4
+        match self.mode() {
+            ProcessorMode::Real => self.seg_regs.read(seg_reg)._as(Type::u32) << 4,
+            ProcessorMode::Protected => Num(0, Type::u32)
+        }
     }
 
-    fn update_flags(&mut self, num: Num, cf: bool, af: bool, of: bool) {
-        self.update_flag(::reg::EFLAGS_CF, cf);
+    fn update_flags(&mut self, num: Num,
+                    cf: Option<bool>, af: Option<bool>, of: Option<bool>) {
+        if cf.is_some() {
+            self.update_flag(::reg::EFLAGS_CF, cf.unwrap());
+        }
         self.update_flag(::reg::EFLAGS_PF, num.low_byte_parity());
-        self.update_flag(::reg::EFLAGS_AF, af); // decimal arith, not needed (?)
+        if af.is_some() {
+            // decimal arith, not needed (?)
+            self.update_flag(::reg::EFLAGS_AF, af.unwrap());
+        }
         self.update_flag(::reg::EFLAGS_ZF, num == 0);
         self.update_flag(::reg::EFLAGS_SF, num < 0);
-        self.update_flag(::reg::EFLAGS_OF, of);
+        if of.is_some() {
+            self.update_flag(::reg::EFLAGS_OF, of.unwrap());
+        }
     }
 
     fn update_flag(&mut self, flag: EFlags, pred: bool) {
@@ -958,6 +1414,34 @@ impl Intel80386 {
                self.seg_regs.read(SegmentRegister::GS));
     }
 
+    fn pop(&mut self) -> Option<Num> {
+        let size = self.current_instr.op_sz;
+        self.pop_sz(size)
+    }
+
+    fn pop_sz(&mut self, size: Size) -> Option<Num> {
+        let sp = Register::decode(0b100, self.current_instr.addr_sz);
+        let spv = self.gen_regs.read(sp);
+        let stack = (self.seg_addr(SegmentRegister::SS) + spv).to_u32().unwrap();
+
+        let res = self.mmu_read_mem_sz(stack, size);
+        if !res.is_some() { return None; }
+        self.gen_regs.write(sp, (spv + size as u32).to_u32().unwrap());
+        Some(Num(res.unwrap(), size.unsigned()))
+    }
+
+    fn push(&mut self, num: Num) -> Option<()> {
+        let sp = Register::decode(0b100, self.current_instr.addr_sz);
+        let spv = self.gen_regs.read(sp);
+        let stack = (self.seg_addr(SegmentRegister::SS) + spv).to_u32().unwrap();
+        let sz = num.size().to_u32().unwrap();
+
+        let res = self.mmu_write_mem(stack - sz, num);
+        if !res.is_some() { return None; }
+        self.gen_regs.write(sp, (spv - sz).to_u32().unwrap());
+        res
+    }
+
     // MMU functions
 
     fn mmu_read_mem_sz(&mut self, vaddr: VAddr, size: Size) -> Option<u32> {
@@ -975,16 +1459,32 @@ impl Intel80386 {
 
         let count = mem::size_of::<T>() as u32;
         assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");
-        if paddr % count != 0 { unimplemented!(); }
 
-        let aligned_paddr = paddr & !0x3;;
-        if let Some(val) = self.mmu_read_mem_u32_aligned(aligned_paddr) {
-            let mask = 0xFFFFFFFFu32 >> (count * 8);
-            let masked_val = (val >> ((paddr % 4) * 8)) & mask;
-            if let Some(coverted) = T::from_u32(masked_val) {
-                return Some(coverted);
-            } else {
-                unreachable!();
+        let aligned_paddr = paddr & !0x3;
+        let aligned_paddr_2 = (paddr + count - 1) & !0x3;
+
+        if aligned_paddr != aligned_paddr_2 {
+            let half_count = count >> 1;
+            let sz = Size::from_u32(half_count).unwrap();
+            if let Some(low) = self.mmu_read_mem_sz(paddr, sz) {
+                if let Some(high) = self.mmu_read_mem_sz(paddr + half_count, sz) {
+                    if let Some(converted) = T::from_u32((high << (half_count * 8)) | low) {
+                        return Some(converted);
+                    } else {
+                        unreachable!();
+                    }
+                }
+            }
+        } else {
+            if let Some(val) = self.mmu_read_mem_u32_aligned(aligned_paddr) {
+                let off = (paddr % 4) * 8;
+                let mask = 0xFFFFFFFFu32 >> (32 - count * 8);
+                let masked_val = (val >> off) & mask;
+                if let Some(converted) = T::from_u32(masked_val) {
+                    return Some(converted);
+                } else {
+                    unreachable!();
+                }
             }
         }
 
@@ -1035,18 +1535,33 @@ impl Intel80386 {
 
         let count = num.size().to_u32().unwrap();
         assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");
-        if paddr % count != 0 { unimplemented!(); }
 
         let aligned_paddr = paddr & !0x3;
-        if let Some(val) = self.mmu_read_mem_u32_aligned(aligned_paddr) {
-            let off = (paddr % 4) * 8;
-            let mask = (0xFFFFFFFFu32 >> (32 - count * 8)) << off;
-            
-            let raw_num = (num.to_u32().unwrap() & num.size().mask()) << off;
-            let new_val = (val & !mask) | (raw_num & mask);
+        let aligned_paddr_2 = (paddr + count - 1) & !0x3;
 
-            if let Some(_) = self.mmu_write_mem_u32_aligned(aligned_paddr, new_val) {
-                return Some(());
+        if aligned_paddr != aligned_paddr_2 {
+            let half_count = count >> 1;
+            let ty = Size::from_u32(half_count).unwrap().unsigned();
+            let mask = 0xFFFFFFFF >> (32 - half_count * 8);
+            let low = (num & mask)._as(ty);
+            let high = (num >> (half_count * 8) as usize)._as(ty);
+
+            if let Some(()) = self.mmu_write_mem(paddr, low) {
+                if let Some(()) = self.mmu_write_mem(paddr + half_count, high) {
+                    return Some(());
+                }
+            }
+        } else {
+            if let Some(val) = self.mmu_read_mem_u32_aligned(aligned_paddr) {
+                let off = (paddr % 4) * 8;
+                let mask = (0xFFFFFFFFu32 >> (32 - count * 8)) << off;
+                
+                let raw_num = (num.to_u32().unwrap() & num.size().mask()) << off;
+                let new_val = (val & !mask) | (raw_num & mask);
+
+                if let Some(_) = self.mmu_write_mem_u32_aligned(aligned_paddr, new_val) {
+                    return Some(());
+                }
             }
         }
 

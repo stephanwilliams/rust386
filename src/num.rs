@@ -176,32 +176,36 @@ impl Num {
         }
     }
 
+    pub fn is_low_bit_set(&self) -> bool {
+        self.0 & 0x1 != 0
+    }
+
     pub fn overflowing_add(self, rhs: Num) -> (Num, bool)  {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         let x = sized_op![self overflowing_add rhs.0; (u32, bool)];
         (Num(x.0, self.1), x.1)
     }
 
     pub fn overflowing_sub(self, rhs: Num) -> (Num, bool)  {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         let x = sized_op![self overflowing_sub rhs.0; (u32, bool)];
         (Num(x.0, self.1), x.1)
     }
 
     pub fn overflowing_mul(self, rhs: Num) -> (Num, bool)  {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         let x = sized_op![self overflowing_mul rhs.0; (u32, bool)];
         (Num(x.0, self.1), x.1)
     }
 
     pub fn overflowing_div(self, rhs: Num) -> (Num, bool)  {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         let x = sized_op![self overflowing_div rhs.0; (u32, bool)];
         (Num(x.0, self.1), x.1)
     }
 
     pub fn overflowing_rem(self, rhs: Num) -> (Num, bool)  {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         let x = sized_op![self overflowing_rem rhs.0; (u32, bool)];
         (Num(x.0, self.1), x.1)
     }
@@ -210,14 +214,14 @@ impl Num {
 
 impl PartialOrd<Num> for Num {
     fn partial_cmp(&self, other: &Num) -> Option<Ordering> {
-        assert!(self.1 == other.1);
+        assert!(self.1 == other.1, "{:?} != {:?}", self.1, other.1);
         sized_ref_op![self partial_cmp other.0; Option<Ordering>]
     }
 }
 
 impl Ord for Num {
     fn cmp(&self, other: &Num) -> Ordering {
-        assert!(self.1 == other.1);
+        assert!(self.1 == other.1, "{:?} != {:?}", self.1, other.1);
         sized_ref_op![self cmp other.0; Ordering]
     }
 }
@@ -226,7 +230,7 @@ impl Add<Num> for Num {
     type Output = Num;
 
     fn add(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self add rhs.0; u32], self.1)
     }
 }
@@ -235,7 +239,7 @@ impl Sub<Num> for Num {
     type Output = Num;
 
     fn sub(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self sub rhs.0; u32], self.1)
     }
 }
@@ -244,7 +248,7 @@ impl Shl<Num> for Num {
     type Output = Num;
 
     fn shl(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self shl rhs.0; u32], self.1)
     }
 }
@@ -253,7 +257,7 @@ impl Shr<Num> for Num {
     type Output = Num;
 
     fn shr(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self shr rhs.0; u32], self.1)
     }
 }
@@ -278,7 +282,7 @@ impl BitAnd<Num> for Num {
     type Output = Num;
 
     fn bitand(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self bitand rhs.0; u32], self.1)
     }
 }
@@ -287,7 +291,7 @@ impl BitOr<Num> for Num {
     type Output = Num;
 
     fn bitor(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self bitor rhs.0; u32], self.1)
     }
 }
@@ -296,7 +300,7 @@ impl BitXor<Num> for Num {
     type Output = Num;
 
     fn bitxor(self, rhs: Num) -> Num {
-        assert!(self.1 == rhs.1);
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
         Num(sized_op![self bitxor rhs.0; u32], self.1)
     }
 }
@@ -324,6 +328,22 @@ macro_rules! bit_impl {
 
             fn bitxor(self, rhs: $ty) -> Num {
                 Num(sized_op![self bitxor rhs; u32], self.1)
+            }
+        }
+
+        impl Add<$ty> for Num {
+            type Output = Num;
+
+            fn add(self, rhs: $ty) -> Num {
+                Num(sized_op![self add rhs; u32], self.1)
+            }
+        }
+
+        impl Sub<$ty> for Num {
+            type Output = Num;
+
+            fn sub(self, rhs: $ty) -> Num {
+                Num(sized_op![self sub rhs; u32], self.1)
             }
         }
     }

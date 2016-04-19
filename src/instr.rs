@@ -4,7 +4,10 @@ use opcodes::{
     UnresolvedOperands, UnresolvedOperand, UnresolvedRegister, UnresolvedOp,
     AddressingMethod, OperantType, GROUP_MAP
 };
-use reg::{ Register, SegmentRegister, RegEnum };
+use reg::{
+    Register, SegmentRegister, ControlRegister,
+    DebugRegister, TestRegister, RegEnum
+};
 use num::{ Size };
 
 // base + ind * scale + disp
@@ -347,7 +350,8 @@ impl Instruction {
     fn resolve_op(&mut self, op: UnresolvedOp) -> Op {
         match op {
             UnresolvedOp::Operand(oper) => self.resolve_operand(oper),
-            UnresolvedOp::Register(reg) => self.resolve_reg(reg)
+            UnresolvedOp::Register(reg) => self.resolve_reg(reg),
+            UnresolvedOp::Constant(con) => Op::Constant(con)
         }
     }
 
@@ -367,9 +371,15 @@ impl Instruction {
                     Op::Memory1(opty.0)
                 },
             // Reg field of ModR/M byte selects a control register
-            AddressingMethod::C => /* for now */ unimplemented!(),
+            AddressingMethod::C => match self.modrm_mod().unwrap() {
+                0b11 => Op::ControlRegister(ControlRegister::decode(self.modrm_rm().unwrap(), first)),
+                _ => panic!("invalid modrm mod")
+            },
             // Reg field of ModR/M byte selects a debug register
-            AddressingMethod::D => unimplemented!(),
+            AddressingMethod::D => match self.modrm_mod().unwrap() {
+                0b11 => Op::DebugRegister(DebugRegister::decode(self.modrm_rm().unwrap(), first)),
+                _ => panic!("invalid modrm mod")
+            },
             // ModR/M specifies operand; gen reg or mem addr. If mem addr,
             // address is computed from seg reg and: base reg, index reg, scaling factor, or
             // displacement
@@ -394,26 +404,29 @@ impl Instruction {
                 Op::RelativeAddress(first)
             },
             // ModR/M may only refer to memory (BOUND, LES, LDS, LSS, LFS, LGS)
-            AddressingMethod::M =>
-                if opty.1.is_some() {
-                    self.set_disp_sz_once(opty.0);
-                    self.set_imm_sz_once(opty.1.unwrap());
-                    Op::Memory2(opty.0, opty.1.unwrap())
-                } else {
-                    self.set_disp_sz_once(opty.0);
-                    Op::Memory1(opty.0)
-                },
+            AddressingMethod::M => match self.modrm_mod().unwrap() {
+                0b00 | 0b01 | 0b10 => self.resolve_addr_form(first),
+                _ => panic!("invalid modrm mod")
+            },
             // No ModR/M; offset of operand coded as (d)word dep on addr sz
             // No base reg, index reg, scale factor
-            AddressingMethod::O => /* ??????????????????????????????????? */ unimplemented!(),
+            AddressingMethod::O => {
+                self.set_disp_sz_once(first);
+                Op::Offset(first)
+            },
             // Mod field of ModR/M may refer only to gen reg
-            AddressingMethod::R => Op::Register(
-                Register::decode(self.modrm_mod().unwrap(), first)),
+            AddressingMethod::R => match self.modrm_mod().unwrap() {
+                0b11 => Op::Register(Register::decode(self.modrm_rm().unwrap(), first)),
+                _ => panic!("invalid modrm mod")
+            },
             // Reg field of ModR/M selects segment register
             AddressingMethod::S => Op::SegmentRegister(
                 SegmentRegister::decode(self.modrm_regop().unwrap(), first)),
             // Reg field of ModR/M selects test register
-            AddressingMethod::T => unimplemented!(),
+            AddressingMethod::T => match self.modrm_mod().unwrap() {
+                0b11 => Op::TestRegister(TestRegister::decode(self.modrm_rm().unwrap(), first)),
+                _ => panic!("invalid modrm mod")
+            },
             // Memory addressed by DS:SI (MOVS, COMPS, OUTS, LODS, SCAS)
             AddressingMethod::X => Op::MemoryAddress(
                 SegmentRegister::DS,
@@ -608,6 +621,9 @@ impl Instruction {
             _ => panic!("invalid operand size for addr form")
         })[modrm_mod as usize][modrm_rm as usize];
 
+        // trace!("modrm mod {:02b} rm {:03b} op {:?}", modrm_mod, modrm_rm, addr_form);
+        // trace!("modrm {:0x} {:08b}", self.modrm.unwrap(), self.modrm.unwrap());
+
         if let Op::MemoryAddress(_, _, _, _, Some(disp), _) = addr_form {
             self.set_disp_sz_once(disp);
         }
@@ -620,6 +636,9 @@ impl Instruction {
 pub enum Op {
     Register(Register),
     SegmentRegister(SegmentRegister),
+    ControlRegister(ControlRegister),
+    DebugRegister(DebugRegister),
+    TestRegister(TestRegister),
     FlagsRegister(Size),
     Memory1(Size),
     Memory2(Size, Size),
@@ -634,6 +653,8 @@ pub enum Op {
     RelativeAddress(Size),
     MemoryOffset(Size),
     Pointer(Size),
+    Constant(u32),
+    Offset(Size)
 }
 
 #[derive(PartialEq, Eq, Debug, Copy, Clone)]

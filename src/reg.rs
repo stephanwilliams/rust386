@@ -1,3 +1,5 @@
+use std::fmt::{ Debug };
+
 use numlib::traits::{ FromPrimitive, ToPrimitive };
 use num::{ Num, Size };
 
@@ -156,13 +158,133 @@ impl RegEnum for Register {
     }
 }
 
-pub struct RegisterFile<T> where T: RegEnum {
+enum_primitive! {
+    #[derive(PartialEq, Eq, Debug, Copy, Clone)]
+    pub enum ControlRegister {
+        CR0 = 0b000_1_1,
+        CR1 = 0b001_1_1,
+        CR2 = 0b010_1_1,
+        CR3 = 0b011_1_1,
+    }
+}
+
+impl RegEnum for ControlRegister {
+    fn encode(&self) -> u8 {
+        (*self as u8) >> 2
+    }
+
+    fn decode(encoding: u8, size: Size) -> ControlRegister {
+        match size {
+            Size::Size32 => {
+                match encoding {
+                    0b000 => ControlRegister::CR0,
+                    0b001 => ControlRegister::CR1,
+                    0b010 => ControlRegister::CR2,
+                    0b011 => ControlRegister::CR3,
+                    _ => panic!("invalid control register")
+                }
+            },
+            _ => panic!("invalid size for control register")
+        }
+    }
+}
+
+bitflags! {
+    pub flags CR0: u32 {
+        const CR0_PE = 0b00000000000000000000000000000001,
+        const CR0_MP = 0b00000000000000000000000000000010,
+        const CR0_EM = 0b00000000000000000000000000000100,
+        const CR0_TS = 0b00000000000000000000000000001000,
+        const CR0_ET = 0b00000000000000000000000000010000,
+        const CR0_PG = 0b10000000000000000000000000000000,
+    }
+}
+
+enum_primitive! {
+    #[derive(PartialEq, Eq, Debug, Copy, Clone)]
+    pub enum DebugRegister {
+        DR0 = 0b000_1_1,
+        DR1 = 0b001_1_1,
+        DR2 = 0b010_1_1,
+        DR3 = 0b011_1_1,
+        DR4 = 0b100_1_1,
+        DR5 = 0b101_1_1,
+        DR6 = 0b110_1_1,
+        DR7 = 0b111_1_1,
+    }
+}
+
+impl RegEnum for DebugRegister {
+    fn encode(&self) -> u8 {
+        (*self as u8) >> 2
+    }
+
+    fn decode(encoding: u8, size: Size) -> DebugRegister {
+        match size {
+            Size::Size32 => {
+                match encoding {
+                    0b000 => DebugRegister::DR0,
+                    0b001 => DebugRegister::DR1,
+                    0b010 => DebugRegister::DR2,
+                    0b011 => DebugRegister::DR3,
+                    0b100 => DebugRegister::DR4,
+                    0b101 => DebugRegister::DR5,
+                    0b110 => DebugRegister::DR6,
+                    0b111 => DebugRegister::DR7,
+                    _ => panic!("invalid control register")
+                }
+            },
+            _ => panic!("invalid size for control register")
+        }
+    }
+}
+
+enum_primitive! {
+    #[derive(PartialEq, Eq, Debug, Copy, Clone)]
+    pub enum TestRegister {
+        TR0 = 0b000_1_1,
+        TR1 = 0b001_1_1,
+        TR2 = 0b010_1_1,
+        TR3 = 0b011_1_1,
+        TR4 = 0b100_1_1,
+        TR5 = 0b101_1_1,
+        TR6 = 0b110_1_1,
+        TR7 = 0b111_1_1,
+    }
+}
+
+impl RegEnum for TestRegister {
+    fn encode(&self) -> u8 {
+        (*self as u8) >> 2
+    }
+
+    fn decode(encoding: u8, size: Size) -> TestRegister {
+        match size {
+            Size::Size32 => {
+                match encoding {
+                    0b000 => TestRegister::TR0,
+                    0b001 => TestRegister::TR1,
+                    0b010 => TestRegister::TR2,
+                    0b011 => TestRegister::TR3,
+                    0b100 => TestRegister::TR4,
+                    0b101 => TestRegister::TR5,
+                    0b110 => TestRegister::TR6,
+                    0b111 => TestRegister::TR7,
+                    _ => panic!("invalid control register")
+                }
+            },
+            _ => panic!("invalid size for control register")
+        }
+    }
+}
+
+pub struct RegisterFile<T> where T: RegEnum + Debug {
     regs: Vec<u32>,
     dummy: Option<T>
 }
 
-impl<T> RegisterFile<T> where T: RegEnum {
-    pub fn new(size: u8) -> RegisterFile<T> where T: RegEnum {
+impl<T> RegisterFile<T> where T: RegEnum + Debug {
+    pub fn new(size: u8) -> RegisterFile<T> where T: RegEnum + Debug {
         RegisterFile {
             regs: vec![0; size as usize],
             dummy: None
@@ -203,6 +325,6 @@ impl<T> RegisterFile<T> where T: RegEnum {
             0b11 => val,
             _ => panic!("invalid register")
         };
-        trace!("write reg {:03b} as {:08x}", ind, self.regs[ind]);
+        trace!("write reg {:?} ({:03b}) as {:08x}", reg, ind, self.regs[ind]);
     }
 }

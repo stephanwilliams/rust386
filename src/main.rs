@@ -98,11 +98,11 @@ fn main() {
     let mut clock: StandardClock<()> = StandardClock::new();
     clock.add_clocked(bus);
 
-    let mut disp = Display::new();
+    // let mut disp = Display::new();
 
-    let mut cga = CGA::new();
+    // let mut cga = CGA::new();
 
-    loop { if !disp.update(&cga).is_some() { return; } }
+    // loop { if !disp.update(&cga).is_some() { return; } }
 
     loop {
         clock.rising_edge(());
