@@ -27,7 +27,7 @@ impl CGA {
 
         for row in 0..CRT_ROWS {
             for col in 0..CRT_COLS {
-                let off = (row * CRT_ROWS + col) as usize;
+                let off = (row * CRT_COLS + col) as usize;
                 cga.ram[2 * off] = 0x20;
                 cga.ram[2 * off + 1] = 0x70;
             }

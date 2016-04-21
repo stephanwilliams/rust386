@@ -1028,6 +1028,24 @@ impl<'a> Intel80386<'a> {
 
         instr_state![self, IMUL -> Post, {
             // Gv, Ev, Iv
+            let (uresop, umulop, uimmop) = match self.current_instr.operands {
+                Operands::Triple(resop, mulop, immop) => (resop, mulop, immop),
+                _ => panic!("unexpected operands for imul")
+            };
+
+            let mulop = self.read_op(umulop);
+            if !mulop.is_some() { return; }
+
+            let immop = self.read_op(uimmop);
+            if !immop.is_some() { return; }
+
+            let mul = mulop.unwrap().to_signed();
+            let imm = immop.unwrap()._as(mul.1);
+
+            let (result, of) = mul.overflowing_mul(imm);
+
+            let res = self.write_op(uresop, result);
+            if !res.is_some() { return; }
         }];
 
         instr_state![self, STOS -> Post, {
@@ -1505,7 +1523,7 @@ impl<'a> Intel80386<'a> {
                 let addr = self.calc_address_seg(seg_reg, base, index, scale, disp_sz);
                 self.mmu_write_mem(addr.to_u32().unwrap(), num)
             },
-            _ => panic!("unhandled write op")
+            op @ _ => panic!("unhandled write op {:?} in instr {:?}", op, self.current_instr)
         }
     }
 

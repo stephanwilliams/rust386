@@ -441,8 +441,15 @@ impl Instruction {
             // No ModR/M; offset of operand coded as (d)word dep on addr sz
             // No base reg, index reg, scale factor
             AddressingMethod::O => {
-                self.set_disp_sz_once(first);
-                Op::Offset(first)
+                let addr_sz = self.addr_sz;
+                self.set_disp_sz_once(addr_sz);
+                Op::MemoryAddress(self.seg_override_prefix.to_seg_reg()
+                           .unwrap_or(SegmentRegister::DS),
+                           None,
+                           None,
+                           1,
+                           Some(addr_sz),
+                           first)
             },
             // Mod field of ModR/M may refer only to gen reg
             AddressingMethod::R => match self.modrm_mod().unwrap() {
