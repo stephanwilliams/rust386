@@ -322,7 +322,7 @@ impl<T> RegisterFile<T> where T: RegEnum + Debug {
 
         assert!(match enc & 0x3 {
             0b00 => val & 0xFFFFFF00,
-            0b01 => val & 0xFFFF00FF,
+            0b01 => val & 0xFFFFFF00,
             0b10 => val & 0xFFFF0000,
             _ => 0
         } == 0, "reg value out of range");

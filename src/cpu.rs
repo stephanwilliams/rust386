@@ -1,7 +1,8 @@
-use numlib::traits::{ FromPrimitive, ToPrimitive };
-
+use numlib::traits::{ FromPrimitive, ToPrimitive }; 
 use std::mem;
 use std::ops::{ Range, };
+use std::cell::{ RefCell };
+use std::rc::{ Rc };
 
 use clock::{ Clocked };
 use bus::{ BusState, BusLine, Signal };
@@ -95,13 +96,17 @@ enum InstructionState {
     POP,
 
     INS_6x,
-    Jcc_7x,
+    Jcc,
     MOV,
     LEA,
+    MOVS,
+    IMUL,
 
-    TEST_Ax,
+    TEST,
+    STOS,
 
     RET_C3,
+    LEAVE,
 
     IN_0,
     OUT_0,
@@ -129,6 +134,10 @@ enum InstructionState {
 
     MOV_0F2x,
     MOVZX_0FBx,
+    SETcc_0F9x,
+    CMOVcc_0F4x,
+
+    NOP,
 
     HALT,
 
@@ -148,21 +157,27 @@ macro_rules! segaddr {
 macro_rules! fetch_next_instr_byte {
     ( $slf:ident ) => {{
         trace!("fetch next instr byte");
-        let mut dist: i32 = ($slf.instr_eip as i32) - ($slf.instr_buf_addr as i32);
-        if dist < 0 || dist >= 4 {
-            $slf.instr_buf_addr = $slf.instr_eip & !0x3;
-            let addr_copy = $slf.instr_buf_addr;
-            if let Some(new_buf) = $slf.mmu_read_mem_sz(addr_copy, Size::Size32) {
-                $slf.instr_buf = new_buf;
-                dist = ($slf.instr_eip - $slf.instr_buf_addr) as i32;
-                trace!("new instr buf: {:08x}", new_buf);
-            } else {
-                return;
-            }
-        }
+        // let mut dist: i32 = ($slf.instr_eip as i32) - ($slf.instr_buf_addr as i32);
+        // if dist < 0 || dist >= 4 {
+        //     $slf.instr_buf_addr = $slf.instr_eip & !0x3;
+        //     let addr_copy = $slf.instr_buf_addr;
+        //     if let Some(new_buf) = $slf.mmu_read_mem_sz(addr_copy, Size::Size32) {
+        //         $slf.instr_buf = new_buf;
+        //         dist = ($slf.instr_eip - $slf.instr_buf_addr) as i32;
+        //         trace!("new instr buf: {:08x}", new_buf);
+        //     } else {
+        //         return;
+        //     }
+        // }
+
+        let addr = $slf.instr_eip;
+        let byte = $slf.mmu_read_mem_sz(addr, Size::Size8);
+        if !byte.is_some() { return; }
+        $slf.instr_byte = byte.unwrap() as u8;
 
         $slf.instr_eip += 1;
-        $slf.instr_byte = (($slf.instr_buf >> (dist * 8)) & 0xFF) as u8;
+        $slf.instr_len += 1;
+        // $slf.instr_byte = (($slf.instr_buf >> (dist * 8)) & 0xFF) as u8;
     }};
 }
 
@@ -173,9 +188,8 @@ macro_rules! instr_state {
 
     ( $slf:ident, $cur:ident -> $next:ident, $blk:block, consumed if $exp:expr $(, -> $skp:ident if $skipif:expr)*) => {
         if $slf.instr_state == InstructionState::$cur {
-            trace!("process state {:?}", InstructionState::$cur);
+            debug!("process state {:?}", InstructionState::$cur);
             if $slf.instr_did_consume_byte {
-                $slf.instr_len += 1;
                 fetch_next_instr_byte![$slf];
                 trace!("instr byte: {:02x}", $slf.instr_byte);
             }
@@ -197,12 +211,14 @@ macro_rules! instr_state {
     };
 }
 
-pub struct Intel80386 {
+pub struct Intel80386<'a> {
     bus_transfer_state: BusTransferState,
     instr_state: InstructionState,
     cache: Cache,
     roms: Vec<(Range<u64>, Rom)>,
-    cga: Option<CGA>,
+    cga: &'a mut CGA,
+    counter: u64,
+    fetch_counter: u64,
 
     eip: u32,
     has_ljmped: bool,
@@ -236,14 +252,16 @@ pub struct Intel80386 {
     io_read_result: Option<(IOAddr, Num)>
 }
 
-impl Intel80386 {
-    pub fn new() -> Intel80386 {
+impl<'a> Intel80386<'a> {
+    pub fn new(cga: &'a mut CGA) -> Intel80386<'a> {
         let mut i386 = Intel80386 {
             bus_transfer_state: BusTransferState::Idle,
             instr_state: InstructionState::Fetch0,
             cache: Cache::new(),
             roms: vec![],
-            cga: None,
+            cga: cga,
+            counter: 0,
+            fetch_counter: 0,
 
             eip: 0,
             has_ljmped: false,
@@ -292,18 +310,6 @@ impl Intel80386 {
         self.roms.push((range, rom));
     }
 
-    pub fn set_cga(&mut self, cga: CGA) {
-        self.cga = Some(cga);
-    }
-
-    pub fn get_cga(&self) -> Option<&CGA> {
-        if let Some(ref cga) = self.cga {
-            return Some(&cga);
-        }
-
-        None
-    }
-
     fn instr_cycle(&mut self, state: &BusState) {
         // Instruction Prefix
         if self.instr_state == InstructionState::Fetch0 {
@@ -316,6 +322,11 @@ impl Intel80386 {
             self.op2val = None;
             self.op3val = None;
             self.result = None;
+            match self.instr_eip {
+                0x7c00 =>     println!("bootloader"),
+                0x10000c =>   println!("kernel"),
+                _ => {}
+            };
         }
         instr_state![self, Fetch0 -> Fetch1, {
             debug!("instr at eip: {:08x}", self.instr_eip);
@@ -394,6 +405,7 @@ impl Intel80386 {
         // First Byte of Opcode
         instr_state![self, Fetch4 -> Fetch5, {
             self.current_instr.opcode = self.instr_byte as u16;
+            self.fetch_counter += 1;
 
             if self.current_instr.opcode != 0x0F {
                 debug!("1-byte opcode {:02x}", self.current_instr.opcode);
@@ -547,20 +559,27 @@ impl Intel80386 {
         -> MOV         if self.current_instr.opcode & 0xFFF0 == 0x00B0,
         -> MOV         if self.current_instr.opcode & 0xFFFE == 0x00C6,
         -> MOV         if self.current_instr.opcode & 0xFFFC == 0x00A0,
-        -> TEST_Ax     if self.current_instr.opcode & 0xFFFE == 0x00A8,
+        -> TEST        if self.current_instr.opcode & 0xFFFE == 0x00A8,
+        -> TEST        if self.current_instr.opcode & 0xFFFE == 0x0084,
         -> CALL_E8     if self.current_instr.opcode          == 0x00E8,
         -> JMP_EA      if self.current_instr.opcode          == 0x00EA,
-        -> JMP_EB      if self.current_instr.opcode          == 0x00EB,
+        -> JMP_EB      if self.current_instr.opcode & 0xFFFD == 0x00E9,
         -> IN_0        if self.current_instr.opcode & 0xFFF6 == 0x00E4,
         -> OUT_0       if self.current_instr.opcode & 0xFFF6 == 0x00E6,
         -> MOVZX_0FBx  if self.current_instr.opcode & 0xFFBE == 0x0FB6,
+        -> SETcc_0F9x  if self.current_instr.opcode & 0xFFF0 == 0x0F90,
         -> MOV_0F2x    if self.current_instr.opcode & 0xFFF0 == 0x0F20,
         -> GRP1        if self.current_instr.opcode & 0xFFFC == 0x0080,
         -> GRP2        if self.current_instr.opcode & 0xFFFE == 0x00C0,
         -> GRP2        if self.current_instr.opcode & 0xFFFC == 0x00D0,
-        -> Jcc_7x      if self.current_instr.opcode & 0xFFF0 == 0x0070,
+        -> GRP3        if self.current_instr.opcode & 0xFFFE == 0x00F6,
+        -> STOS        if self.current_instr.opcode          == 0x00AA,
+        -> STOS        if self.current_instr.opcode          == 0x00AB,
+        -> Jcc         if self.current_instr.opcode & 0xFFF0 == 0x0070,
+        -> Jcc         if self.current_instr.opcode & 0xFFF0 == 0x0F80,
         -> LEA         if self.current_instr.opcode          == 0x008D,
         -> RET_C3      if self.current_instr.opcode          == 0x00C3,
+        -> LEAVE       if self.current_instr.opcode          == 0x00C9,
         -> CLC_F8      if self.current_instr.opcode          == 0x00F8,
         -> STC_F9      if self.current_instr.opcode          == 0x00F9,
         -> CLI_FA      if self.current_instr.opcode          == 0x00FA,
@@ -569,8 +588,16 @@ impl Intel80386 {
         -> STD_FD      if self.current_instr.opcode          == 0x00FD,
         -> GRP5        if self.current_instr.opcode          == 0x00FF,
         -> GRP6        if self.current_instr.opcode          == 0x0F00,
-        -> GRP7        if self.current_instr.opcode          == 0x0F01
+        -> GRP7        if self.current_instr.opcode          == 0x0F01,
+        -> CMOVcc_0F4x if self.current_instr.opcode & 0xFFF0 == 0x0F40,
+        -> NOP         if self.current_instr.opcode          == 0x0090,
+        -> MOVS        if self.current_instr.opcode & 0xFFFE == 0x00A4,
+        -> IMUL        if self.current_instr.opcode          == 0x0069
         ];
+
+        instr_state![self, NOP -> Post, {
+            // nop
+        }];
 
         instr_state![self, GRP1 -> HALT, {
             match self.current_instr.operands {
@@ -826,6 +853,8 @@ impl Intel80386 {
                 count -= 1;
             }
             
+            let of = self.eflags.contains(::reg::EFLAGS_CF) != rm.is_sign_bit_set();
+            self.update_flag(::reg::EFLAGS_OF, of);
             self.result = Some(rm);
         }];
 
@@ -839,12 +868,29 @@ impl Intel80386 {
                 count -= 1;
             }
             
+            self.update_flag(::reg::EFLAGS_CF, rm.is_sign_bit_set());
             self.result = Some(rm);
         }];
 
         instr_state![self, SAR -> Post, {
-            unimplemented!();
+            let mut rm = self.op1val.unwrap().to_signed();
+            let mut count =
+                self.op2val.unwrap().to_unsigned().to_u32().unwrap() & 0x1F;
+            while count > 0 {
+                self.update_flag(::reg::EFLAGS_CF, rm.is_low_bit_set());
+                rm = rm / 2;
+                count -= 1;
+            }
+            
+            self.update_flag(::reg::EFLAGS_OF, false);
+            self.result = Some(rm);
         }];
+
+        instr_state![self, GRP3 -> HALT, {
+
+        },
+        -> TEST if self.current_instr.modrm_regop().unwrap() == 0b000
+        ];
 
         instr_state![self, GEN_OP_Write -> Post, {
             match self.current_instr.operands {
@@ -869,7 +915,9 @@ impl Intel80386 {
             };
 
             let res = self.push(op);
-            if !res.is_some() { return; }
+            if !res.is_some() { 
+                debug!("no push");
+                return; }
         }];
 
         instr_state![self, POP -> Post, {
@@ -883,37 +931,34 @@ impl Intel80386 {
             self.gen_regs.write(reg, res.unwrap().to_u32().unwrap());
         }];
 
-        instr_state![self, Jcc_7x -> Post, {
+        instr_state![self, Jcc -> Post, {
             let off = Num(self.current_instr.imm,
                           Size::from_u32(self.current_instr.imm_sz).unwrap().signed());
-            trace!("JUMP OFF {:?}", off);
-            let cond = match self.current_instr.opcode & 0x0F {
-                0x0 =>  self.eflags.contains(  ::reg::EFLAGS_OF),
-                0x1 => !self.eflags.contains(  ::reg::EFLAGS_OF),
-                0x2 =>  self.eflags.contains(  ::reg::EFLAGS_CF),
-                0x3 => !self.eflags.contains(  ::reg::EFLAGS_CF),
-                0x4 =>  self.eflags.contains(  ::reg::EFLAGS_ZF),
-                0x5 => !self.eflags.contains(  ::reg::EFLAGS_ZF),
-                0x6 =>  self.eflags.contains(  ::reg::EFLAGS_CF | ::reg::EFLAGS_ZF),
-                0x7 => !self.eflags.intersects(::reg::EFLAGS_CF | ::reg::EFLAGS_ZF),
-                0x8 =>  self.eflags.contains(  ::reg::EFLAGS_SF),
-                0x9 => !self.eflags.contains(  ::reg::EFLAGS_SF),
-                0xA =>  self.eflags.contains(  ::reg::EFLAGS_PF),
-                0xB => !self.eflags.contains(  ::reg::EFLAGS_PF),
-                0xC =>  self.eflags.contains(  ::reg::EFLAGS_SF) != self.eflags.contains(::reg::EFLAGS_OF),
-                0xD =>  self.eflags.contains(  ::reg::EFLAGS_SF) == self.eflags.contains(::reg::EFLAGS_OF),
-                0xE =>  self.eflags.contains(  ::reg::EFLAGS_SF) != self.eflags.contains(::reg::EFLAGS_OF)
-                    &&  self.eflags.contains(  ::reg::EFLAGS_ZF),
-                0xF =>  self.eflags.contains(  ::reg::EFLAGS_SF) == self.eflags.contains(::reg::EFLAGS_OF)
-                    && !self.eflags.contains(  ::reg::EFLAGS_ZF),
-                _ => panic!("unknown jump")
-            };
+
+            let cond = self.get_cond(self.current_instr.opcode as u8 & 0xF);
 
             if cond {
                 let target = ((self.eip as i32) + off._as(Type::i32).to_i32().unwrap()) as u32;
                 trace!("JUMP {:?} TO {:?}", off._as(Type::i32).to_i32(), target);
-                self.eip = target;
+
+                self.eip = if self.current_instr.op_sz == Size::Size16 {
+                    target & 0x0000FFFF
+                } else {
+                    target
+                };
             }
+        }];
+
+        instr_state![self, SETcc_0F9x -> Post, {
+            let op = match self.current_instr.operands {
+                Operands::Single(op) => op,
+                _ => panic!("unexpected operands for setcc")
+            };
+
+            let cond = self.get_cond(self.current_instr.opcode as u8 & 0xF);
+
+            let res = self.write_op(op, Num(if cond { 1 } else { 0 }, Type::u8));
+            if !res.is_some() { return; }
         }];
 
         instr_state![self, LEA -> Post, {
@@ -953,7 +998,7 @@ impl Intel80386 {
 
         }];
 
-        instr_state![self, TEST_Ax -> Post, {
+        instr_state![self, TEST -> Post, {
             match self.current_instr.operands {
                 Operands::Double(uop1, uop2) => {
                     let op1 = self.read_op(uop1);
@@ -979,6 +1024,63 @@ impl Intel80386 {
                 },
                 _ => panic!("unexpected operand")
             }
+        }];
+
+        instr_state![self, IMUL -> Post, {
+            // Gv, Ev, Iv
+        }];
+
+        instr_state![self, STOS -> Post, {
+            let (memop, regop) = match self.current_instr.operands {
+                Operands::Double(memop, regop) => (memop, regop),
+                _ => panic!("unexpected operands for stos")
+            };
+
+            let reg = self.read_op(regop);
+            if !reg.is_some() { return; }
+
+            let res = self.write_op(memop, reg.unwrap());
+            if !res.is_some() { return; }
+
+            let dir = if self.eflags.contains(::reg::EFLAGS_DF) { -1 } else { 1 };
+            let diff = dir * (self.current_instr.op_sz as i32);
+
+            let di = Register::decode(0b111, self.current_instr.op_sz);
+            let cur_di = self.gen_regs.read(di);
+            self.gen_regs.write(di, (cur_di.to_u32().unwrap() as i32 + diff) as u32);
+        }];
+
+        instr_state![self, MOVS -> Post, {
+            // ??:ESI -> ES:EDI
+            let (dstop, srcop) = match self.current_instr.operands {
+                Operands::Double(dstop, srcop) => (dstop, srcop),
+                _ => panic!("unexpected operands for movs")
+            };
+
+            let src = self.read_op(srcop);
+            if !src.is_some() { return; }
+
+            let dst = self.write_op(dstop, src.unwrap());
+            if !dst.is_some() { return; }
+
+            let dir = if self.eflags.contains(::reg::EFLAGS_DF) { -1 } else { 1 };
+            let diff = dir * (self.current_instr.op_sz as i32);
+
+            let reg_sz = match self.current_instr.op_sz {
+                Size::Size32 => Size::Size32,
+                Size::Size8 | Size::Size16 => Size::Size16,
+                _ => panic!("invalid movs operand size")
+            };
+
+
+            let si = Register::decode(0b110, reg_sz);
+            let di = Register::decode(0b111, reg_sz);
+
+            let cur_si = self.gen_regs.read(si);
+            let cur_di = self.gen_regs.read(di);
+
+            self.gen_regs.write(si, (cur_si.to_u32().unwrap() as i32 + diff) as u32);
+            self.gen_regs.write(di, (cur_di.to_u32().unwrap() as i32 + diff) as u32);
         }];
 
         instr_state![self, INS_6x -> Post, {
@@ -1050,6 +1152,21 @@ impl Intel80386 {
             };
 
             self.eip = new_ip.to_u32().unwrap();
+        }];
+
+        instr_state![self, LEAVE -> Post, {
+            let addr_sz = self.current_instr.addr_sz;
+            let op_sz = self.current_instr.op_sz;
+
+            let sp = Register::decode(0b100, addr_sz);
+            let bp = Register::decode(0b101, addr_sz);
+
+            let val = self.gen_regs.read(bp);
+            self.gen_regs.write(sp, val.0);
+
+            let old_bp = self.pop();
+            if !old_bp.is_some() { return; }
+            self.gen_regs.write(bp, old_bp.unwrap().0);
         }];
 
         instr_state![self, CALL_E8 -> Post, {
@@ -1164,7 +1281,8 @@ impl Intel80386 {
                 Operands::Double(op1, op2) =>
                     match self.read_op(op2) {
                         Some(val) => {
-                            self.write_op(op1, val);
+                            let res = self.write_op(op1, val);
+                            if !res.is_some() { return; }
                         },
                         None => return
                     },
@@ -1177,7 +1295,8 @@ impl Intel80386 {
                 Operands::Double(op1, op2) =>
                     match self.read_op(op2) {
                         Some(val) => {
-                            self.write_op(op1, val);
+                            let res = self.write_op(op1, val);
+                            if !res.is_some() { return; }
                         },
                         None => return
                     },
@@ -1185,8 +1304,24 @@ impl Intel80386 {
             }
         }];
 
+        instr_state![self, CMOVcc_0F4x -> Post, {
+            let cond = self.get_cond(self.current_instr.opcode as u8 & 0xF);
+            if cond {
+                match self.current_instr.operands {
+                    Operands::Double(op1, op2) => {
+                        let op = self.read_op(op2);
+                        if !op.is_some() { return; }
+                        let res = self.write_op(op1, op.unwrap());
+                        if !res.is_some() { return; }
+                    },
+                    _ => panic!("unexpected operand")
+                }
+            }
+
+        }];
+
         instr_state![self, HALT -> HALT, {
-            trace!("halt");
+            panic!("halt");
         }];
 
         instr_state![self, Post -> Fetch0, {
@@ -1302,6 +1437,30 @@ impl Intel80386 {
                 self.seg_addr(SegmentRegister::CS)._as(Type::u32) + self.eip
                     | if self.has_ljmped { 0 } else { 0xFFF00000 },
             ProcessorMode::Protected => Num(self.eip, Type::u32)
+        }
+    }
+
+    fn get_cond(&self, cond: u8) -> bool {
+        match cond {
+            0x0 =>  self.eflags.contains(  ::reg::EFLAGS_OF),
+            0x1 => !self.eflags.contains(  ::reg::EFLAGS_OF),
+            0x2 =>  self.eflags.contains(  ::reg::EFLAGS_CF),
+            0x3 => !self.eflags.contains(  ::reg::EFLAGS_CF),
+            0x4 =>  self.eflags.contains(  ::reg::EFLAGS_ZF),
+            0x5 => !self.eflags.contains(  ::reg::EFLAGS_ZF),
+            0x6 =>  self.eflags.contains(  ::reg::EFLAGS_CF) || self.eflags.contains(::reg::EFLAGS_ZF),
+            0x7 => !self.eflags.intersects(::reg::EFLAGS_CF | ::reg::EFLAGS_ZF),
+            0x8 =>  self.eflags.contains(  ::reg::EFLAGS_SF),
+            0x9 => !self.eflags.contains(  ::reg::EFLAGS_SF),
+            0xA =>  self.eflags.contains(  ::reg::EFLAGS_PF),
+            0xB => !self.eflags.contains(  ::reg::EFLAGS_PF),
+            0xC =>  self.eflags.contains(  ::reg::EFLAGS_SF) != self.eflags.contains(::reg::EFLAGS_OF),
+            0xD =>  self.eflags.contains(  ::reg::EFLAGS_SF) == self.eflags.contains(::reg::EFLAGS_OF),
+            0xE =>  self.eflags.contains(  ::reg::EFLAGS_SF) != self.eflags.contains(::reg::EFLAGS_OF)
+                &&  self.eflags.contains(  ::reg::EFLAGS_ZF),
+            0xF =>  self.eflags.contains(  ::reg::EFLAGS_SF) == self.eflags.contains(::reg::EFLAGS_OF)
+                && !self.eflags.contains(  ::reg::EFLAGS_ZF),
+            _ => panic!("unknown cond")
         }
     }
 
@@ -1461,7 +1620,11 @@ impl Intel80386 {
         let ext_num = num._as(op_sz.unsigned());
 
         let res = self.mmu_write_mem(stack - (op_sz as u32), ext_num);
-        if !res.is_some() { return None; }
+        if !res.is_some() {
+            debug!("no mem write");
+            return None; }
+        debug!("push {} bytes on stack for {:08x} at addr {:08x}",
+               (op_sz as u32), ext_num.0, spv - (op_sz as u32));
         self.gen_regs.write(sp, (spv - (op_sz as u32)).to_u32().unwrap());
         res
     }
@@ -1477,19 +1640,26 @@ impl Intel80386 {
             let pdx = (vaddr & 0xFFC00000) >> 22;
             let ptx = (vaddr & 0x003FF000) >> 12;
             let off = vaddr & 0x00000FFF;
-            trace!("{:08x} {:08x} {:08x}|{:08x} {:08x} {:08x}", cr3, pdbr, vaddr, pdx, ptx, off);
+            trace!("cr3 {:08x} pdbr {:08x} vaddr {:08x}", cr3, pdbr, vaddr);
+            trace!("pdx {:08x} ptx {:08x} off {:08x}", pdx, ptx, off);
 
             let maybe_pde = self.mmu_read_mem_u32_aligned(pdbr + (pdx * 4));
             if !maybe_pde.is_some() { return None; }
 
             let pde = maybe_pde.unwrap();
             trace!("pde {:08x}", pde);
+            if pde & 0x1 == 0 {
+                panic!("pde not present");
+            }
             let pt = pde & 0xFFFFF000;
             let maybe_pte = self.mmu_read_mem_u32_aligned(pt + (ptx * 4));
             if !maybe_pte.is_some() { return None; }
 
             let pte = maybe_pte.unwrap();
             trace!("pte {:08x}", pte);
+            if pte & 0x1 == 0 {
+                panic!("pte not present");
+            }
             let page = pte & 0xFFFFF000;
             trace!("VA {:08x} to PA {:08x}", vaddr, page | off);
             Some(page | off)
@@ -1499,13 +1669,10 @@ impl Intel80386 {
     }
 
     fn mmu_read_mem_sz(&mut self, vaddr: VAddr, size: Size) -> Option<u32> {
-        let maybe_paddr = self.translate_addr(vaddr);
-        if !maybe_paddr.is_some() { return None; }
-        let paddr = maybe_paddr.unwrap();
         match size {
-            Size::Size8 =>  self.mmu_read_mem::<u8 >(paddr).map(|x| x as u32),
-            Size::Size16 => self.mmu_read_mem::<u16>(paddr).map(|x| x as u32),
-            Size::Size32 => self.mmu_read_mem::<u32>(paddr),
+            Size::Size8 =>  self.mmu_read_mem::<u8 >(vaddr).map(|x| x as u32),
+            Size::Size16 => self.mmu_read_mem::<u16>(vaddr).map(|x| x as u32),
+            Size::Size32 => self.mmu_read_mem::<u32>(vaddr),
             _ => panic!("unhandled read size")
         }
     }
@@ -1525,8 +1692,8 @@ impl Intel80386 {
         if aligned_paddr != aligned_paddr_2 {
             let half_count = count >> 1;
             let sz = Size::from_u32(half_count).unwrap();
-            if let Some(low) = self.mmu_read_mem_sz(paddr, sz) {
-                if let Some(high) = self.mmu_read_mem_sz(paddr + half_count, sz) {
+            if let Some(low) = self.mmu_read_mem_sz(vaddr, sz) {
+                if let Some(high) = self.mmu_read_mem_sz(vaddr + half_count, sz) {
                     if let Some(converted) = T::from_u32((high << (half_count * 8)) | low) {
                         return Some(converted);
                     } else {
@@ -1553,31 +1720,30 @@ impl Intel80386 {
     fn mmu_read_mem_u32_aligned(&mut self, paddr: PAddr) -> Option<u32> {
         assert!(self.bus_transfer_state == BusTransferState::Idle);
         assert!(paddr % 4 == 0, "paddr not 4 byte aligned");
-        debug!("load u32 {:08x}", paddr);
 
         // check rom(s)
         for &(ref range, ref rom) in self.roms.iter() {
             if range.start <= (paddr as u64) && (paddr as u64) < range.end {
-                debug!("found in rom");
+                trace!("found in rom");
                 return Some(rom.read(paddr - range.start as u32));
             }
         }
 
-        if let Some(ref cga) = self.cga {
-            if 0xB8000 <= paddr && paddr < 0xC0000 {
-                // video ram
-                return Some(cga.read_u32(paddr));
-            }
+        if 0xB8000 <= paddr && paddr < 0xC0000 {
+            // video ram
+            let res = self.cga.read_u32(paddr - 0xB8000);
+            trace!("cga read got {:08x}", res);
+            return Some(res);
         }
 
         // check cache
         let cached = self.cache.read(paddr);
         if cached.is_some() {
-            debug!("found in cache");
+            trace!("read {:08x} found in cache", paddr);
             return cached;
         }
 
-        debug!("not found; go to memory");
+        trace!("read {:08x} not found; go to memory", paddr);
 
         // read in from memory
         self.bus_is_write = false;
@@ -1595,33 +1761,40 @@ impl Intel80386 {
         if !maybe_paddr.is_some() { return None; }
         let paddr = maybe_paddr.unwrap();
 
-        let count = num.size().to_u32().unwrap();
+        let count = num.size().to_u32().expect("count");
         assert!(count == 1 || count == 2 || count == 4, "count must be in 1, 2, 4");
 
         let aligned_paddr = paddr & !0x3;
         let aligned_paddr_2 = (paddr + count - 1) & !0x3;
+        trace!("mmu write mem");
 
         if aligned_paddr != aligned_paddr_2 {
+            trace!("split write");
             let half_count = count >> 1;
-            let ty = Size::from_u32(half_count).unwrap().unsigned();
+            let ty = Size::from_u32(half_count).expect("half count").unsigned();
             let mask = 0xFFFFFFFF >> (32 - half_count * 8);
             let low = (num & mask)._as(ty);
             let high = (num >> (half_count * 8) as usize)._as(ty);
 
-            if let Some(()) = self.mmu_write_mem(paddr, low) {
-                if let Some(()) = self.mmu_write_mem(paddr + half_count, high) {
+            if let Some(()) = self.mmu_write_mem(vaddr, low) {
+                trace!("mmu write first half");
+                if let Some(()) = self.mmu_write_mem(vaddr + half_count, high) {
+                    trace!("mmu write second half");
                     return Some(());
                 }
             }
         } else {
+            trace!("normal write; read first");
             if let Some(val) = self.mmu_read_mem_u32_aligned(aligned_paddr) {
+                trace!("read, no write");
                 let off = (paddr % 4) * 8;
                 let mask = (0xFFFFFFFFu32 >> (32 - count * 8)) << off;
                 
-                let raw_num = (num.to_u32().unwrap() & num.size().mask()) << off;
+                let raw_num = (num.0 & num.size().mask()) << off;
                 let new_val = (val & !mask) | (raw_num & mask);
 
                 if let Some(_) = self.mmu_write_mem_u32_aligned(aligned_paddr, new_val) {
+                    trace!("done");
                     return Some(());
                 }
             }
@@ -1633,7 +1806,6 @@ impl Intel80386 {
     fn mmu_write_mem_u32_aligned(&mut self, paddr: PAddr, val: u32) -> Option<()> {
         assert!(self.bus_transfer_state == BusTransferState::Idle);
         assert!(paddr % 4 == 0, "paddr not 4 byte aligned");
-        debug!("write u32 {:08x}", paddr);
 
         // check rom(s)
         for &(ref range, ref rom) in self.roms.iter() {
@@ -1642,22 +1814,21 @@ impl Intel80386 {
             }
         }
 
-        if let Some(ref mut cga) = self.cga {
-            if 0xB8000 <= paddr && paddr < 0xC0000 {
-                // video ram
-                cga.write_u32(paddr, val);
-                return Some(());
-            }
+        if 0xB8000 <= paddr && paddr < 0xC0000 {
+            // video ram
+            info!("cga write val {:08x} to {:08x}", val, paddr - 0xB8000);
+            self.cga.write_u32(paddr - 0xB8000, val);
+            return Some(());
         }
 
         // check cache
         let cached = self.cache.read(paddr);
         if cached.is_some() && cached.unwrap() == val {
-            debug!("found in cache");
+            trace!("write {:08x} found in cache", paddr);
             return Some(());
         }
 
-        debug!("not found; go to memory");
+        trace!("write {:08x} not found; go to memory", paddr);
 
         // read in from memory
         self.bus_is_write = true;
@@ -1718,9 +1889,18 @@ impl Intel80386 {
     }
 }
 
-impl Clocked<BusState, BusState> for Intel80386 {
+impl<'a> Clocked<BusState, BusState> for Intel80386<'a> {
     fn rising_edge(&mut self, state: BusState) -> BusState {
-        println!("cpu rising on {:?}", self.instr_state);
+        if self.counter % 1000 == 0 {
+            self.cga.update();
+        }
+        if self.counter % 100000 == 0 {
+            println!("{} {}", self.counter, self.fetch_counter);
+        }
+
+        self.counter += 1;
+
+        trace!("cpu rising on {:?}", self.instr_state);
 
         if self.bus_transfer_state == BusTransferState::T2 {
             self.bus_transfer_cycle(&state);
@@ -1738,12 +1918,12 @@ impl Clocked<BusState, BusState> for Intel80386 {
     }
 
     fn falling_edge(&mut self, state: BusState) -> BusState {
-        println!("cpu falling");
+        trace!("cpu falling");
         let mut new_state = BusState::new();
 
         match self.bus_transfer_state {
             BusTransferState::T1 => {
-                debug!("write to bus");
+                trace!("write to bus");
                 new_state.assert(BusLine::ADS, Signal::Low);
                 new_state.assert(BusLine::W_R,  if self.bus_is_write { Signal::High } else { Signal::Low });
                 new_state.assert(BusLine::D_C,  if self.bus_is_data  { Signal::High } else { Signal::Low });

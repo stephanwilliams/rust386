@@ -41,7 +41,6 @@ mod iobus;
 mod disk;
 mod num;
 mod cga;
-mod display;
 
 use bus::{ Bus, BusState };
 use clock::{ HalfTimeClock, StandardClock, Clock, Clocked };
@@ -52,7 +51,6 @@ use iter::{ DWords };
 use iobus::{ IoBus };
 use disk::{ Disk };
 use cga::{ CGA, CGAController };
-use display::{ Display };
 
 use std::fs::{ File };
 use std::io::{ Read };
@@ -60,7 +58,10 @@ use std::io::{ Read };
 fn main() {
     env_logger::init().unwrap();
 
-    let mut cpu = Intel80386::new();
+    let mut cga = CGA::new();
+    // let cga_ref = cpu.get_cga();
+
+    let mut cpu = Intel80386::new(&mut cga);
 
     let bios_bin = File::open("../bios/bios.bin").unwrap();
     let bios: Vec<u32> = DWords::new(bios_bin).collect();
@@ -100,13 +101,16 @@ fn main() {
 
     // let mut disp = Display::new();
 
-    // let mut cga = CGA::new();
 
-    // loop { if !disp.update(&cga).is_some() { return; } }
-
+    // let mut counter = 0;
     loop {
         clock.rising_edge(());
         clock.falling_edge(());
+        // if counter == 100 {
+        //     if !disp.update(&cga).is_some() { return; }
+        //     counter = 0;
+        // }
+
+        // counter += 1;
     }
-    
 }

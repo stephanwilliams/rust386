@@ -262,7 +262,7 @@ impl Instruction {
 
     pub fn sib_index(&self) -> Option<u8> {
         if let Some(sib) = self.sib {
-            Some((sib >> 2) & 0x7)
+            Some((sib >> 3) & 0x7)
         } else {
             None
         }
@@ -303,47 +303,77 @@ impl Instruction {
                 self.resolve_op(uop2),
                 self.resolve_op(uop3)
                 ),
-            UnresolvedOperands::Group(grp) => self.resolve_grp(grp, &[]),
-            UnresolvedOperands::GroupSingle(grp, uop1) => self.resolve_grp(grp, &[uop1]),
-            UnresolvedOperands::GroupDouble(grp, uop1, uop2) => self.resolve_grp(grp, &[uop1, uop2]),
+            UnresolvedOperands::Group(grp) =>
+                self.resolve_grp(grp, UnresolvedOperands::None),
+            UnresolvedOperands::GroupSingle(grp, uop1) =>
+                self.resolve_grp(grp, UnresolvedOperands::Single(uop1)),
+            UnresolvedOperands::GroupDouble(grp, uop1, uop2) =>
+                self.resolve_grp(grp, UnresolvedOperands::Double(uop1, uop2)),
             _ => panic!("resolve invalid instr")
         };
     }
 
-    fn resolve_grp(&mut self, grp: usize, grp_ops: &[UnresolvedOp]) -> Operands {
+    fn resolve_grp(&mut self, grp: usize, grp_ops: UnresolvedOperands) -> Operands {
         let op = self.modrm_regop().unwrap() as usize;
-        let ugrp = GROUP_MAP[grp - 1][op];
-        match grp_ops.len() {
-            0 => match ugrp {
-                UnresolvedOperands::None => Operands::None,
-                UnresolvedOperands::Single(uop1) => Operands::Single(
-                    self.resolve_op(uop1)
-                    ),
-                UnresolvedOperands::Double(uop1, uop2) => Operands::Double(
-                    self.resolve_op(uop1),
-                    self.resolve_op(uop2)
-                    ),
-                UnresolvedOperands::Triple(uop1, uop2, uop3) => Operands::Triple(
-                    self.resolve_op(uop1),
-                    self.resolve_op(uop2),
-                    self.resolve_op(uop3)
-                    ),
-                _ => panic!("resolve invalid instr")
-            },
-            1 => {
-                assert!(ugrp == UnresolvedOperands::None, "combine ops");
-                Operands::Single(
-                    self.resolve_op(grp_ops[0])
-                )
-            },
-            2 => {
-                assert!(ugrp == UnresolvedOperands::None, "combine ops");
-                Operands::Double(
-                    self.resolve_op(grp_ops[0]),
-                    self.resolve_op(grp_ops[1])
-                )
-            },
-            _ => panic!("unexpected group op count")
+        let grp_ind = if grp == 3 && self.opcode == 0xf7 { 8 } else { grp - 1 };
+        let ugrp = GROUP_MAP[grp_ind][op];
+        match grp_ops {
+            UnresolvedOperands::None =>
+                match ugrp {
+                    UnresolvedOperands::None => Operands::None,
+                    UnresolvedOperands::Single(guop1) => Operands::Single(
+                        self.resolve_op(guop1)
+                        ),
+                    UnresolvedOperands::Double(guop1, guop2) => Operands::Double(
+                        self.resolve_op(guop1),
+                        self.resolve_op(guop2)
+                        ),
+                    UnresolvedOperands::Triple(guop1, guop2, guop3) => Operands::Triple(
+                        self.resolve_op(guop1),
+                        self.resolve_op(guop2),
+                        self.resolve_op(guop3)
+                        ),
+                    _ => panic!("resolve invalid instr")
+                },
+            UnresolvedOperands::Single(uop1) =>
+                match ugrp {
+                    UnresolvedOperands::None => Operands::Single(
+                        self.resolve_op(uop1)
+                        ),
+                    UnresolvedOperands::Single(guop1) => Operands::Double(
+                        self.resolve_op(uop1),
+                        self.resolve_op(guop1)
+                        ),
+                    UnresolvedOperands::Double(guop1, guop2) => Operands::Triple(
+                        self.resolve_op(uop1),
+                        self.resolve_op(guop1),
+                        self.resolve_op(guop2)
+                        ),
+                    _ => panic!("resolve invalid instr")
+                },
+            UnresolvedOperands::Double(uop1, uop2) =>
+                match ugrp {
+                    UnresolvedOperands::None => Operands::Double(
+                        self.resolve_op(uop1),
+                        self.resolve_op(uop2)
+                        ),
+                    UnresolvedOperands::Single(guop1) => Operands::Triple(
+                        self.resolve_op(uop1),
+                        self.resolve_op(uop2),
+                        self.resolve_op(guop1)
+                        ),
+                    _ => panic!("resolve invalid instr")
+                },
+            UnresolvedOperands::Triple(uop1, uop2, uop3) =>
+                match ugrp {
+                    UnresolvedOperands::None => Operands::Triple(
+                        self.resolve_op(uop1),
+                        self.resolve_op(uop2),
+                        self.resolve_op(uop3)
+                        ),
+                    _ => panic!("resolve invalid instr")
+                },
+            _ => panic!("resolve invalid instr")
         }
     }
 
@@ -625,7 +655,7 @@ impl Instruction {
         // trace!("modrm {:0x} {:08b}", self.modrm.unwrap(), self.modrm.unwrap());
         
         // sib
-        if self.op_sz == Size::Size32 && modrm_rm == 0b100 {
+        if self.addr_sz == Size::Size32 && modrm_rm == 0b100 {
             if let Op::MemoryAddress(seg, _, _, _, disp, size) = addr_form {
                 let scale = self.sib_ss().unwrap();
                 let index = self.sib_index_to_reg();

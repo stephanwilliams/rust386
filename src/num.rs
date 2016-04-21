@@ -1,5 +1,5 @@
 use std::ops::{
-    Not, Add, Sub, Shl, Shr,
+    Not, Add, Sub, Shl, Shr, Div,
     BitAnd, BitOr, BitXor
 };
 use std::cmp::{ Ord, PartialOrd, Ordering };
@@ -244,6 +244,15 @@ impl Sub<Num> for Num {
     }
 }
 
+impl Div<Num> for Num {
+    type Output = Num;
+
+    fn div(self, rhs: Num) -> Num {
+        assert!(self.1 == rhs.1, "{:?} != {:?}", self.1, rhs.1);
+        Num(sized_op![self div rhs.0; u32], self.1)
+    }
+}
+
 impl Shl<Num> for Num {
     type Output = Num;
 
@@ -344,6 +353,14 @@ macro_rules! bit_impl {
 
             fn sub(self, rhs: $ty) -> Num {
                 Num(sized_op![self sub rhs; u32], self.1)
+            }
+        }
+
+        impl Div<$ty> for Num {
+            type Output = Num;
+
+            fn div(self, rhs: $ty) -> Num {
+                Num(sized_op![self div rhs; u32], self.1)
             }
         }
     }

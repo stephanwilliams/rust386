@@ -28,7 +28,7 @@ impl Clocked<BusState, BusState> for MemoryController {
         if state.read(BusLine::ADS) == Signal::Low
             && state.read(BusLine::D_C) == Signal::High
             && state.read(BusLine::M_IO) == Signal::High {
-                debug!("received memory request {:x}", state.read_address());
+                trace!("received memory request {:x}", state.read_address());
 
                 let addr = state.read_address();
                 let addr4 = (addr >> 2) as isize;
@@ -39,12 +39,13 @@ impl Clocked<BusState, BusState> for MemoryController {
                 match state.read(BusLine::W_R) {
                     Signal::High => {
                         let data = state.read_data();
-                        trace!("MEMWR {:08x} {:08x}", data, addr);
+                        trace!("mem write {:08x} to {:08x}", data, addr);
                         unsafe { *self.memory.offset(addr4) = data };
                     },
                     Signal::Low => {
-                        new_state.assert_data(unsafe {
-                            *self.memory.offset(addr4)}, 4, 0);
+                        let data = unsafe { *self.memory.offset(addr4) };
+                        trace!("mem read {:08} from {:08x}", data, addr);
+                        new_state.assert_data(data, 4, 0);
                     },
                     _ => panic!("mem w/r undefined")
                 }

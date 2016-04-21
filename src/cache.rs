@@ -1,14 +1,15 @@
+const CACHE_SIZE: usize = 65536;
 pub struct Cache {
     // 4 * 8096 = 32768 byte cache
-    tags:  [Option<u32>; 8096],
-    cache: [u32; 8096]
+    tags:  [Option<u32>; CACHE_SIZE],
+    cache: [u32; CACHE_SIZE]
 }
 
 impl Cache {
     pub fn new() -> Cache {
         Cache {
-            tags: [None; 8096],
-            cache: [0; 8096]
+            tags: [None; CACHE_SIZE],
+            cache: [0; CACHE_SIZE]
         }
     }
 
@@ -33,12 +34,17 @@ impl Cache {
         let tag = paddr >> 2;
         let ind = (tag % self.tags.len() as u32) as usize;
 
+        if let Some(t) = self.tags[ind] {
+            if t != tag {
+                debug!("cache evict {:08x} by {:08x}", t, tag);
+            }
+        }
         self.tags[ind] = Some(tag);
         self.cache[ind] = data;
     }
 
     pub fn flush(&mut self) {
-        self.tags = [None; 8096];
-        self.cache = [0; 8096];
+        self.tags = [None; CACHE_SIZE];
+        self.cache = [0; CACHE_SIZE];
     }
 }

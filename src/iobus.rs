@@ -23,10 +23,10 @@ pub trait IoDevice {
         assert!(port + 3 < Self::PORT_COUNT, "invalid port");
         assert!(port & 0x3 == 0, "port must be 4-byte aligned");
 
-        let hh = self.read_u8(port) as u32;
-        let hl = self.read_u8(port + 1) as u32;
-        let lh = self.read_u8(port + 2) as u32;
-        let ll = self.read_u8(port + 3) as u32;
+        let hh = self.read_u8(port + 3) as u32;
+        let hl = self.read_u8(port + 2) as u32;
+        let lh = self.read_u8(port + 1) as u32;
+        let ll = self.read_u8(port) as u32;
 
         (hh << 24) | (hl << 16) | (lh << 8) | ll
     }
@@ -101,7 +101,7 @@ impl<'a> Clocked<BusState, BusState> for IoBus<'a> {
             self.bus_data = state.read_data();
             self.bus_data_size = state.read_size();
 
-            debug!("received io request {:x}", state.read_address());
+            trace!("received io request {:x}", state.read_address());
         }
 
         if self.bus_is_valid {
