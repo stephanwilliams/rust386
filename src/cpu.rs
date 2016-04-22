@@ -1667,7 +1667,7 @@ impl<'a> Intel80386<'a> {
             let pde = maybe_pde.unwrap();
             trace!("pde {:08x}", pde);
             if pde & 0x1 == 0 {
-                panic!("pde not present");
+                panic!("pde {:08x} for vaddr {:08x} not present", pde, vaddr);
             }
             let pt = pde & 0xFFFFF000;
             let maybe_pte = self.mmu_read_mem_u32_aligned(pt + (ptx * 4));
