@@ -86,7 +86,7 @@ impl CGA {
 
             let t = Text::new_color(color::WHITE, 16);
             let mut cache = Glyphs::new(
-                &Path::new("../UbuntuMono-R.ttf"),
+                &Path::new("font/UbuntuMono-R.ttf"),
                 self.window.factory.borrow_mut().clone()
                 ).ok().unwrap();
 

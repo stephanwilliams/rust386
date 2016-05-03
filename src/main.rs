@@ -63,7 +63,7 @@ fn main() {
 
     let mut cpu = Intel80386::new(&mut cga);
 
-    let bios_bin = File::open("../bios/bios.bin").unwrap();
+    let bios_bin = File::open("bios/bios.bin").unwrap();
     let bios: Vec<u32> = DWords::new(bios_bin).collect();
     let bios_rom = Rom::new(&bios[..], 0x10000);
     cpu.map_rom(bios_rom, 0x000F0000..0x00100000);
@@ -78,7 +78,7 @@ fn main() {
 
     hclock.add_clocked(cpu);
 
-    let mut kernel_img = File::open("../kernel.img").unwrap();
+    let mut kernel_img = File::open("kernel.img").unwrap();
     let mut kernel: Vec<u8> = vec![];
     kernel_img.read_to_end(&mut kernel).unwrap();
     let disk = Disk::new(kernel);
