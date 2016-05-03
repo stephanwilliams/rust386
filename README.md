@@ -3,6 +3,10 @@
 Rust 386 is a simple Intel 80386 emulator that supports only the minimum
 features needed to boot the JOS operating system (as of Lab 1).
 
+The code was written in the space of a month during school, so it contains a lot
+of messy code and some rather questionable design decisions that probably
+contribute to how slowly it runs (~70k IPS on my computer).
+
 ## Important Files
 
 * `kernel.img`: The disk image used by the emulator, which contains the kernel.
